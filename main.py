@@ -129,11 +129,104 @@ class QuestionRequest(BaseModel):
     question: str
 
 
-query_tool = FunctionTool.from_defaults(query_knowledge_base)
+es_query_tool = FunctionTool.from_defaults(query_knowledge_base)
+
+OPOINT_TOKEN = os.getenv("OPOINT_TOKEN")
+
+def fetch_news_articles(company_name, additional_keywords=None, number_of_articles=5):
+    """
+    Fetches recent news articles related to a specified company from the Opoint API.
+    
+    ### Parameters:
+    - `company_name` (str): The primary company name to search for in news articles.
+    - `additional_keywords` (str, optional): Extra keywords to narrow down the search for articles. 
+      Can be any term that refines the search context, like "distribution" or "sales".
+    - `number_of_articles` (int, default=5): The number of news articles to return.
+    
+    ### Returns:
+    - A list of dictionaries, each containing:
+      - `header` (str): The headline of the news article.
+      - `text` (str): The test body of the article.
+      - `url` (str): Direct URL link to the article.
+      - `rank_global` (int): Global rank of the source website.
+      - `rank_country` (int): Country-specific rank of the source website.
+
+    ### Usage Example:
+    `fetch_news_articles("Giant Eagle", additional_keywords="sustainability", number_of_articles=3)`
+
+    ### Agent Instructions:
+    - Call this function by providing `company_name`, `additional_keywords` (optional), and `number_of_articles` (optional).
+    - Use the `company_name` parameter to specify the main focus of the search (e.g., "Giant Eagle").
+    - Use `additional_keywords` if narrowing down the search to specific themes or topics within articles is needed.
+    - The function will return a structured list of articles with specific fields, which can be parsed or presented to end-users.
+    - Fields `header`, `summary`, and `url` should be prioritized for article display, while `rank_global` and `rank_country` can provide context on the article's source.
+
+    ### Notes for the AI Agent:
+    - Ensure that the API token is valid before calling the function.
+    - If any error occurs in fetching data, log the error and inform the user.
+    - Return an empty list if no articles are found, and log this as well.
+    """
+    
+    # Base Opoint API URL and authorization token
+    api_url = "https://api.opoint.com/search/"
+    opoint_token = OPOINT_TOKEN  # replace with your Opoint token
+    
+    headers = {
+        'Authorization': f'Token {opoint_token}',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+    }
+    
+    # Constructing the search term based on company name and additional keywords
+    search_term = f"header:'{company_name}'"
+    if additional_keywords:
+        search_term += f" AND body:'{additional_keywords}'"
+
+    # Defining payload with query parameters
+    payload = {
+        "searchterm": search_term,
+        "params": {
+            "requestedarticles": number_of_articles,
+            "main": {
+                "header": 1,
+                "summary": 1,
+                "text": 1
+            }
+        },
+        "profile": 523024
+    }
+
+    try:
+        # Sending the POST request to the API
+        response = requests.post(api_url, headers=headers, json=payload)
+        response_data = response.json()
+
+        # Extracting articles and relevant fields
+        articles = []
+        for article in response_data.get('searchresult', {}).get('document', []):
+            articles.append({
+                'header': article.get('header', {}).get('text', ''),
+                'text': article.get('body', {}).get('text', ''),
+                'url': article.get('orig_url', ''),
+                'rank_global': article.get('site_rank', {}).get('rank_global', None),
+                'rank_country': article.get('site_rank', {}).get('rank_country', None),
+            })
+
+        return articles # Convert the list to a JSON string
+
+    except requests.RequestException as e:
+        print(f"An error occurred while fetching articles: {e}")
+        return []
+
+from llama_index.core.tools.tool_spec.load_and_search import LoadAndSearchToolSpec
+
+opoint_tool = FunctionTool.from_defaults(fetch_news_articles)
+
+opoint_tool_ls = LoadAndSearchToolSpec.from_defaults(opoint_tool).to_tool_list()
 
 agent = ReActAgent(
     llm=llm,
-    tools=[query_tool],
+    tools=[es_query_tool, opoint_tool_ls[0], opoint_tool_ls[1]],
     verbose=True,
     memory=composable_memory
 )
