@@ -21,3 +21,8 @@ huggingface-hub
 nest-asyncio
 async-lru
 requests
+cryptography
+pypdf
+pypdf2
+pymupdf
+pdfplumber
