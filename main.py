@@ -81,11 +81,6 @@ composable_memory = SimpleComposableMemory.from_defaults(
 )
 
 
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-
 # Query knowledge base function
 def query_knowledge_base(question: str) -> str:
     """
