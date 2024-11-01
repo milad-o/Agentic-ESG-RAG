@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import requests
 import json
@@ -12,10 +12,12 @@ from llama_index.core.memory import (
     SimpleComposableMemory,
     ChatMemoryBuffer,
 )
+from llama_index.core.tools.tool_spec.load_and_search import LoadAndSearchToolSpec
+
 from dotenv import load_dotenv
+load_dotenv()
 
 from fastapi.middleware.cors import CORSMiddleware
-
 
 # FastAPI app setup
 app = FastAPI()
@@ -32,12 +34,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-load_dotenv()
 
 # Load environment variables
 WX_PROJECT_ID = os.getenv("WX_PROJECT_ID")
 IBM_CLOUD_API_KEY = os.getenv("IBM_CLOUD_API_KEY")
 WX_URL = os.getenv("WX_URL")
+ES_URL = os.getenv("ES_URL")
+ES_USERNAME = os.getenv("ES_USERNAME")
+ES_PASSWORD = os.getenv("ES_PASSWORD")
 
 # Initialize LLM parameters
 temperature = 0.1
@@ -81,48 +85,76 @@ composable_memory = SimpleComposableMemory.from_defaults(
 )
 
 
-# Query knowledge base function
-def query_knowledge_base(question: str) -> str:
-    """
-    Function to query the knowledge base and return the LLM response.
-    """
-    url = "https://rag-llm-llama-service-rel8ed.1mitp0uqijpc.us-south.codeengine.appdomain.cloud/queryLLM"
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
 
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "RAG-APP-API-Key": "Rel8edRAGLLM",
-    }
+from elasticsearch import Elasticsearch
+import json
 
-    payload = {
-        "question": question,
-        "es_index_name": "index_m1",
-        "filters": {},
-        "llm_params": {"inputs": []},
-        "es_model_name": ".elser_model_2_linux-x86_64",
-        "llm_instructions": "[INST]<<SYS>>You are a helpful AI assistant specialized in analyzing and presenting corporate ESG information and data. Answer the following question based on the documents provided. Respond concisely and ensure your response is accurate and clear. If the documents do not contain the answer, state that no relevant information is available.<</SYS>>\\n\\n{context_str}\\n\\n{query_str}[/INST]",
-        "es_index_text_field": "body_content_field",
-        "es_model_text_field": "ml.tokens",
-    }
-
-    try:
-        response = requests.post(url, headers=headers, data=json.dumps(payload))
-        response.raise_for_status()  # Raise an HTTPError for bad responses
-        return response.json().get("llm_response")
-    except requests.exceptions.ConnectionError:
-        return "Error: Failed to connect to the knowledge base. Please try again later."
-    except requests.exceptions.HTTPError as err:
-        return f"Error: {err.response.status_code}, {err.response.text}"
-
+es_client = Elasticsearch(
+    ES_URL,
+    basic_auth=(ES_USERNAME, ES_PASSWORD),
+    ca_certs="2fc143c1-c95e-4e7b-93ac-d87975849575",
+    verify_certs=True
+)
 
 from pydantic import BaseModel
 
+class SearchInput(BaseModel):
+    query_text: str
+    index: str = "index_m1"
+    top_hits: int = 5
 
-class QuestionRequest(BaseModel):
-    question: str
+
+def search_corporate_reports(query_text: str, index: str = "index_m1", top_hits: int = 5):
+    """
+    Search the corporate documents database on an Elasticsearch index using a semantic text expansion query.
+
+    Parameters:
+    - query_text (str): The input text for the semantic search, e.g., "Google sustainability".
+    - index (str, optional): The name of the Elasticsearch index to query. Defaults to "index_m1".
+    - top_hits (int, optional): The maximum number of top hits to return. Defaults to 5.
+
+    Returns:
+    - list of dict: A list of dictionaries, where each dictionary represents a matching document and includes:
+      "metadata.page_label", "file_name", and "body_content_field".
+
+    Example:
+    --------
+    response = search_corporate_docs_database("Google sustainability")
+    for doc in response:
+        print(doc)
+
+    Notes:
+    - This function is designed as a tool for a ReActAgent to perform semantic searches in a corporate document database.
+    - Uses a fixed model_id: ".elser_model_2_linux-x86_64" for the text expansion query.
+    - Only relevant document fields are returned for succinct responses.
+    """
+        
+    search_query = {
+        "query": {
+            "text_expansion": {
+                "ml.tokens": {
+                    "model_id": ".elser_model_2_linux-x86_64",
+                    "model_text": query_text
+                }
+            }
+        },
+        "_source": ["metadata.page_label", "file_name", "body_content_field"],
+        "size": top_hits,
+        "track_total_hits": False
+    }
+    
+    response = es_client.search(index=index, body=search_query)
+
+    return response['hits']
 
 
-es_query_tool = FunctionTool.from_defaults(query_knowledge_base)
+es_tool = FunctionTool.from_defaults(search_corporate_reports)
+
+es_tool_ls = LoadAndSearchToolSpec.from_defaults(es_tool).to_tool_list()
+
 
 OPOINT_TOKEN = os.getenv("OPOINT_TOKEN")
 
@@ -215,17 +247,21 @@ def fetch_news_articles(company_name, additional_keywords=None, number_of_articl
         return []
 
 
-from llama_index.core.tools.tool_spec.load_and_search import LoadAndSearchToolSpec
-
 opoint_tool = FunctionTool.from_defaults(fetch_news_articles)
 
 opoint_tool_ls = LoadAndSearchToolSpec.from_defaults(opoint_tool).to_tool_list()
 
 agent = ReActAgent(
     llm=llm,
-    tools=[es_query_tool, opoint_tool_ls[0], opoint_tool_ls[1]],
+    tools=[
+        es_tool_ls[0],
+        es_tool_ls[1],
+        opoint_tool_ls[0],
+        opoint_tool_ls[1],
+    ],
     verbose=True,
     memory=composable_memory,
+    max_iterations=10
 )
 
 from llama_index.core import PromptTemplate
@@ -295,13 +331,16 @@ def index():
     return {"Hello": "World"}
 
 
+class QuestionRequest(BaseModel):
+    question: str
+
 @app.post("/query")
 async def query_endpoint(request: QuestionRequest):
     try:
         # Query the agent and get the response as a string
         result = agent.chat(request.question)
         # Return the structured response and the processed raw_output
-        return result
+        return result.response
 
     except requests.exceptions.ConnectionError:
         raise HTTPException(
