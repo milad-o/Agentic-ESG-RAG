@@ -24,5 +24,4 @@ requests
 elasticsearch
 llama-index-vector-stores-elasticsearch
 llama-index-embeddings-elasticsearch
-base64
 tempfile
