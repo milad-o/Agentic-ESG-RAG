@@ -19,16 +19,15 @@ load_dotenv()
 
 from fastapi.middleware.cors import CORSMiddleware
 
+from elasticsearch import Elasticsearch
+import json
+
 # FastAPI app setup
 app = FastAPI()
 
-
-# Set up CORS
-origins = ["*"]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # Allows all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,12 +35,13 @@ app.add_middleware(
 
 
 # Load environment variables
-WX_PROJECT_ID = os.getenv("WX_PROJECT_ID")
 IBM_CLOUD_API_KEY = os.getenv("IBM_CLOUD_API_KEY")
+WX_PROJECT_ID = os.getenv("WX_PROJECT_ID")
 WX_URL = os.getenv("WX_URL")
 ES_URL = os.getenv("ES_URL")
 ES_USERNAME = os.getenv("ES_USERNAME")
 ES_PASSWORD = os.getenv("ES_PASSWORD")
+OPOINT_TOKEN = os.getenv("OPOINT_TOKEN")
 
 # Initialize LLM parameters
 temperature = 0.1
@@ -84,28 +84,14 @@ composable_memory = SimpleComposableMemory.from_defaults(
     secondary_memory_sources=[vector_memory],
 )
 
-
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-from elasticsearch import Elasticsearch
-import json
-
 es_client = Elasticsearch(
     ES_URL,
     basic_auth=(ES_USERNAME, ES_PASSWORD),
-    ca_certs="2fc143c1-c95e-4e7b-93ac-d87975849575",
+    ca_certs="es_cert",
     verify_certs=True
 )
 
 from pydantic import BaseModel
-
-class SearchInput(BaseModel):
-    query_text: str
-    index: str = "index_m1"
-    top_hits: int = 5
-
 
 def search_corporate_reports(query_text: str, index: str = "index_m1", top_hits: int = 5):
     """
@@ -154,9 +140,6 @@ def search_corporate_reports(query_text: str, index: str = "index_m1", top_hits:
 es_tool = FunctionTool.from_defaults(search_corporate_reports)
 
 es_tool_ls = LoadAndSearchToolSpec.from_defaults(es_tool).to_tool_list()
-
-
-OPOINT_TOKEN = os.getenv("OPOINT_TOKEN")
 
 
 def fetch_news_articles(company_name, additional_keywords=None, number_of_articles=5):
@@ -261,7 +244,7 @@ agent = ReActAgent(
     ],
     verbose=True,
     memory=composable_memory,
-    max_iterations=10
+    max_iterations=20
 )
 
 from llama_index.core import PromptTemplate
@@ -330,7 +313,6 @@ agent.update_prompts({"agent_worker:system_prompt": system_prompt})
 def index():
     return {"Hello": "World"}
 
-
 class QuestionRequest(BaseModel):
     question: str
 
@@ -338,10 +320,14 @@ class QuestionRequest(BaseModel):
 async def query_endpoint(request: QuestionRequest):
     try:
         # Query the agent and get the response as a string
-        result = agent.chat(request.question)
+        reply = agent.chat(request.question)
         # Return the structured response and the processed raw_output
-        return result.response
-
+        result = {
+            "response": reply.response,
+            "sources": [item.dict() for item in reply.sources]
+            }
+        
+        return result
     except requests.exceptions.ConnectionError:
         raise HTTPException(
             status_code=503,
