@@ -340,7 +340,7 @@ async def query_endpoint(request: QuestionRequest):
         # Query the agent and get the response as a string
         result = agent.chat(request.question)
         # Return the structured response and the processed raw_output
-        return result.response
+        return result
 
     except requests.exceptions.ConnectionError:
         raise HTTPException(
