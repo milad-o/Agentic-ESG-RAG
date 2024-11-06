@@ -140,15 +140,17 @@ def fetch_news_articles(
     search_term = f"header:'{company_name}'"
     if additional_keywords:
         search_term += f" AND body:{additional_keywords}"
+    search_term += " globalrank<1000 profile:523024"
+    search_term = f"({search_term})"
 
     # Defining payload with query parameters
     payload = {
         "searchterm": search_term,
         "params": {
             "requestedarticles": number_of_articles,
-            "main": {"header": 1, "summary": 1, "text": 1},
-        },
-        "profile": 523024,
+            "main": {"header": 1, "text": 1},
+            "groupidentical": True
+        }
     }
 
     try:
@@ -329,7 +331,6 @@ from llama_index.core.agent import ReActAgent
 
 context = """
 RULES:
-- Use the tools to answer user queries.
 - Corporate reports should be used in preference to news articles.
 - Use least number of tools.
 - Don't use the same tool with the same parameters twice. 
@@ -345,7 +346,7 @@ agent = ReActAgent(
     ],
     verbose=True,
     memory=composable_memory,
-    max_iterations=12,
+    max_iterations=10,
     context=context
 )
 
@@ -353,7 +354,7 @@ agent = ReActAgent(
 # FastApi app setup ----------------------------
 @app.get("/")
 def index():
-    return {"Hello": "World"}
+    return {"Message": "Agentic RAG API is running"}
 
 ## Main endpoint for querying the agent
 from pydantic import BaseModel
