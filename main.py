@@ -57,9 +57,14 @@ llm = WatsonxLLM(
     max_new_tokens=200
 )
 
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.embeddings.ibm import WatsonxEmbeddings
 
-embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
+embed_model = WatsonxEmbeddings(
+    model_id="ibm/slate-125m-english-rtrvr",
+    apikey=IBM_CLOUD_API_KEY,
+    url=WX_URL,
+    project_id=WX_PROJECT_ID
+)
 
 ## Setting default llm and embedding model for llama_index
 from llama_index.core import Settings
@@ -94,38 +99,7 @@ def fetch_news_articles(
     ) -> List[Dict[str, Any]]:
     """
     Fetches recent news articles related to a specified company from the Opoint API.
-
-    ### Parameters:
-    - `company_name` (str): The primary company name to search for in news articles.
-    - `additional_keywords` (str, optional): Extra keywords to narrow down the search for articles.
-      Can be any term that refines the search context, like "distribution" or "sales".
-    - `number_of_articles` (int, default=5): The number of news articles to return.
-
-    ### Returns:
-    - A list of dictionaries, each containing:
-      - `header` (str): The headline of the news article.
-      - `text` (str): The test body of the article.
-      - `url` (str): Direct URL link to the article.
-      - `rank_global` (int): Global rank of the source website.
-      - `rank_country` (int): Country-specific rank of the source website.
-
-    ### Usage Example:
-    `fetch_news_articles("Giant Eagle", additional_keywords="sustainability", number_of_articles=3)`
-
-    ### Agent Instructions:
-    - Call this function by providing `company_name`, `additional_keywords` (optional), and `number_of_articles` (optional).
-    - Use the `company_name` parameter to specify the main focus of the search (e.g., "Giant Eagle").
-    - Use `additional_keywords` if narrowing down the search to specific themes or topics within articles is needed.
-    - The function will return a structured list of articles with specific fields, which can be parsed or presented to end-users.
-    - Fields `header`, `summary`, and `url` should be prioritized for article display, while `rank_global` and `rank_country` can provide context on the article's source.
-    - Make sure, by default, you provide the references.
-
-    ### Notes for the AI Agent:
-    - Ensure that the API token is valid before calling the function.
-    - If any error occurs in fetching data, log the error and inform the user.
-    - Return an empty list if no articles are found, and log this as well.
     """
-
     # Base Opoint API URL and authorization token
     api_url = "https://api.opoint.com/search/"
     opoint_token = OPOINT_TOKEN  # replace with your Opoint token
@@ -191,8 +165,12 @@ def fetch_news_articles(
         index = VectorStoreIndex(nodes, storage_context=storage_context_opoint)
 
         retriever = index.as_retriever(similarity_top_k=5)
+        
+        query = f"{company_name}"
+        if additional_keywords:
+            query += f" {additional_keywords}"
 
-        output = retriever.retrieve(str_or_query_bundle=f"{company_name} {additional_keywords}")
+        output = retriever.retrieve(str_or_query_bundle=query)
 
         result = []
         for n in output:
@@ -228,26 +206,6 @@ storage_context_elastic = StorageContext.from_defaults(vector_store=chroma_store
 def search_corporate_reports(query_text: str, index: str = "index_m1", top_hits: int = 5):
     """
     Search the corporate documents database on an Elasticsearch index using a semantic text expansion query.
-
-    Parameters:
-    - query_text (str): The input text for the semantic search, e.g., "Google sustainability".
-    - index (str, optional): The name of the Elasticsearch index to query. Defaults to "index_m1".
-    - top_hits (int, optional): The maximum number of top hits to return. Defaults to 5.
-
-    Returns:
-    - list of dict: A list of dictionaries, where each dictionary represents a matching document and includes:
-      "metadata.page_label", "file_name", and "body_content_field".
-
-    Example:
-    --------
-    response = search_corporate_docs_database("Google sustainability")
-    for doc in response:
-        print(doc)
-
-    Notes:
-    - This function is designed as a tool for a ReActAgent to perform semantic searches in a corporate document database.
-    - Uses a fixed model_id: ".elser_model_2_linux-x86_64" for the text expansion query.
-    - Only relevant document fields are returned for succinct responses.
     """
         
     search_query = {
