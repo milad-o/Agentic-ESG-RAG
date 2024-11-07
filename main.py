@@ -2,7 +2,7 @@
 # This is the main file for the Agentic_RAG_App
 # It contains the FastAPI app, the main function, and the index function
 
-# If you're running this locally, use Uvicorn to serve the app
+# If you're running this locally, use `uvicorn` to serve the app
 
 # FastAPI app setup ----------------------------
 from fastapi import FastAPI, HTTPException
@@ -21,6 +21,7 @@ app.add_middleware(
 # Load environment variables -------------------
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 import base64
 import tempfile
@@ -48,18 +49,10 @@ from llama_index.llms.ibm import WatsonxLLM
 
 llm = WatsonxLLM(
     model_id="mistralai/mistral-large",
-    # model_id="meta-llama/llama-3-2-3b-instruct",
     apikey=IBM_CLOUD_API_KEY,
     url=WX_URL,
     project_id=WX_PROJECT_ID,
-    temperature=.1,
-    additional_params={"top_p": 1},
-    max_new_tokens=200
 )
-
-# from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-
-# embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
 
 from llama_index.embeddings.ibm import WatsonxEmbeddings
 
@@ -67,11 +60,13 @@ embed_model = WatsonxEmbeddings(
     model_id="ibm/slate-125m-english-rtrvr",
     apikey=IBM_CLOUD_API_KEY,
     url=WX_URL,
-    project_id=WX_PROJECT_ID
+    project_id=WX_PROJECT_ID,
+    truncate_input_tokens= 10
 )
 
 ## Setting default llm and embedding model for llama_index
 from llama_index.core import Settings
+
 Settings.embed_model = embed_model
 Settings.llm = llm
 
@@ -79,24 +74,12 @@ Settings.llm = llm
 # Function/tools for the agent -------------------
 ## Opoint function
 import requests
-import json
-
-from llama_index.core import Document, VectorStoreIndex, StorageContext
-from llama_index.core.node_parser import SentenceSplitter
-node_parser = SentenceSplitter(chunk_size=150, chunk_overlap=20)
-
-from chromadb import EphemeralClient
-from llama_index.vector_stores.chroma import ChromaVectorStore
-
-client = EphemeralClient()
-
-collection_opoint = client.get_or_create_collection(name="opoint")
-chroma_store_opoint = ChromaVectorStore(chroma_collection=collection_opoint)
-storage_context_opoint = StorageContext.from_defaults(vector_store=chroma_store_opoint)
 
 from typing import List, Dict, Any, Optional
 
-def fetch_news_articles(company_name: str, additional_keywords: Optional[str] =None, number_of_articles=5) -> List[Dict[str, Any]]:
+def fetch_news_articles(
+    company_name: str, additional_keywords: Optional[str] = None, number_of_articles=5
+) -> List[Dict[str, Any]]:
     """
     Fetches recent news articles related to a specified company and additional keywords
     and returns a list of dictionaries representing chunks of the articles with metadata.
@@ -126,14 +109,14 @@ def fetch_news_articles(company_name: str, additional_keywords: Optional[str] =N
         "params": {
             "requestedarticles": number_of_articles,
             "main": {"header": 1, "text": 1},
-            "groupidentical": True
-        }
+            "groupidentical": True,
+        },
     }
 
     try:
         # Sending the POST request to the API
         response = requests.post(api_url, headers=headers, json=payload)
-        response_data = response.json()['searchresult']['document']
+        response_data = response.json()["searchresult"]["document"]
 
         # Extracting articles and relevant fields
         articles = []
@@ -154,37 +137,7 @@ def fetch_news_articles(company_name: str, additional_keywords: Optional[str] =N
                 }
             )
 
-        docs = []
-
-        for article in articles:
-            doc = Document(
-                text=f"HEADER: {article['header']}\n\nTEXT: {article['text']}",
-                metadata = article['metadata'],
-            )
-            docs.append(doc)
-
-        nodes = node_parser.get_nodes_from_documents(docs)
-
-        index = VectorStoreIndex(nodes, storage_context=storage_context_opoint)
-
-        retriever = index.as_retriever(similarity_top_k=5)
-
-        query = f"{company_name}"
-        if additional_keywords:
-            query += f" {additional_keywords}"
-
-        output = retriever.retrieve(str_or_query_bundle=query)
-
-        result = []
-        for n in output:
-            result.append(
-            {
-                "text": n.node.text,
-                "metadata": n.node.metadata
-            }
-        )
-
-        return result
+        return articles
 
     except requests.RequestException as e:
         print(f"An error occurred while fetching articles: {e}")
@@ -198,73 +151,47 @@ es_client = Elasticsearch(
     ES_URL,
     basic_auth=(ES_USERNAME, ES_PASSWORD),
     ca_certs=temp_cert_path,
-    verify_certs=True
+    verify_certs=True,
 )
 
-collection_elastic = client.get_or_create_collection(name="elastic")
-chroma_store_elastic = ChromaVectorStore(chroma_collection=collection_elastic)
 
-storage_context_elastic = StorageContext.from_defaults(vector_store=chroma_store_elastic)
-
-def search_corporate_reports(query_text: str, index: str = "index_m1", top_hits: int = 5):
+def search_corporate_reports(
+    query_text: str, index: str = "index_m1", top_hits: int = 5
+):
     """
     Search the corporate documents database and returns a list of dictionaries
     representing matching documents with metadata.
     """
-        
+
     search_query = {
         "query": {
             "text_expansion": {
                 "ml.tokens": {
                     "model_id": ".elser_model_2_linux-x86_64",
-                    "model_text": query_text
+                    "model_text": query_text,
                 }
             }
         },
         "_source": ["metadata.page_label", "file_name", "body_content_field"],
         "size": top_hits,
-        "track_total_hits": False
+        "track_total_hits": False,
     }
-    
-    hits = es_client.search(index=index, body=search_query)['hits']['hits']
 
-    docs = []
+    hits = es_client.search(index=index, body=search_query)["hits"]["hits"]
 
-    for hit in hits:
-        doc = Document(
-            text=hit['_source']['body_content_field'],
-            metadata = {
-                "page_label": hit['_source']['metadata']['page_label'],
-                "file_name": hit['_source']['file_name']
-            },
-            doc_id=hit['_id']  
-        )
-        docs.append(doc)
+    return hits
 
-    nodes = node_parser.get_nodes_from_documents(docs)
-
-    index = VectorStoreIndex(nodes, storage_context=storage_context_elastic)
-
-    retriever = index.as_retriever(similarity_top_k=5)
-
-    output = retriever.retrieve(str_or_query_bundle=query_text)
-
-    result = []
-    for n in output:
-        result.append(
-            {
-                "text": n.node.text,
-                "metadata": n.node.metadata
-            }
-        )
-
-    return result
 
 # Agent tools and subsequent L&S tools
 from llama_index.core.tools import FunctionTool
 
 es_tool = FunctionTool.from_defaults(search_corporate_reports)
 opoint_tool = FunctionTool.from_defaults(fetch_news_articles)
+
+from llama_index.core.tools.tool_spec.load_and_search import LoadAndSearchToolSpec
+
+es_tool_ls = LoadAndSearchToolSpec.from_defaults(es_tool).to_tool_list()
+opoint_tool_ls = LoadAndSearchToolSpec.from_defaults(opoint_tool).to_tool_list()
 
 
 # Memory for the agent ------------------------
@@ -290,26 +217,12 @@ composable_memory = SimpleComposableMemory.from_defaults(
 # The agent ----------------------------------
 from llama_index.core.agent import ReActAgent
 
-
-context = """
-RULES:
-- Corporate reports should be used in preference to news articles.
-- Use least number of tools.
-- Don't use the same tool with the same parameters twice. 
-- Don't use the tools if you already know the answer.
-- Provide references.
-"""
-
 agent = ReActAgent(
     llm=llm,
-    tools=[
-        es_tool,
-        opoint_tool
-    ],
+    tools=[*es_tool_ls, *opoint_tool_ls],
     verbose=True,
     memory=composable_memory,
-    max_iterations=10,
-    context=context
+    max_iterations=12,
 )
 
 
@@ -318,11 +231,14 @@ agent = ReActAgent(
 def index():
     return {"Message": "Agentic RAG API is running"}
 
+
 ## Main endpoint for querying the agent
 from pydantic import BaseModel
 
+
 class QuestionRequest(BaseModel):
     question: str
+
 
 @app.post("/query")
 async def query_endpoint(request: QuestionRequest):
@@ -332,9 +248,9 @@ async def query_endpoint(request: QuestionRequest):
         # Return the structured response and the processed raw_output
         result = {
             "response": reply.response,
-            "sources": [item.dict() for item in reply.sources]
-            }
-        
+            "sources": [item.dict() for item in reply.sources],
+        }
+
         return result
     except requests.exceptions.ConnectionError:
         raise HTTPException(
