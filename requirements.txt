@@ -1,6 +1,5 @@
 llama-index==0.11.22
 llama-index-embeddings-ibm==0.2.1
-llama-index-vector-stores-chroma==0.3.0
 llama-index-llms-ibm==0.2.3
 elasticsearch==8.15.1
 fastapi==0.115.4
