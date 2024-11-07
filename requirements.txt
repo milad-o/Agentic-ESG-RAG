@@ -3,3 +3,5 @@ llama-index-embeddings-ibm==0.2.1
 llama-index-llms-ibm==0.2.3
 elasticsearch==8.15.1
 fastapi==0.115.4
+uvicorn==0.32.0
+python-dotenv==1.0.1
