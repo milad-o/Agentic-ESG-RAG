@@ -57,6 +57,10 @@ llm = WatsonxLLM(
     max_new_tokens=200
 )
 
+# from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+# embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
+
 from llama_index.embeddings.ibm import WatsonxEmbeddings
 
 embed_model = WatsonxEmbeddings(
@@ -92,14 +96,13 @@ storage_context_opoint = StorageContext.from_defaults(vector_store=chroma_store_
 
 from typing import List, Dict, Any, Optional
 
-def fetch_news_articles(
-        company_name: str,
-        additional_keywords: Optional[str]=None,
-        number_of_articles: int=5
-    ) -> List[Dict[str, Any]]:
+def fetch_news_articles(company_name: str, additional_keywords: Optional[str] =None, number_of_articles=5) -> List[Dict[str, Any]]:
     """
-    Fetches recent news articles related to a specified company from the Opoint API.
+    Fetches recent news articles related to a specified company and additional keywords
+    and returns a list of dictionaries representing chunks of the articles with metadata.
+
     """
+
     # Base Opoint API URL and authorization token
     api_url = "https://api.opoint.com/search/"
     opoint_token = OPOINT_TOKEN  # replace with your Opoint token
@@ -165,7 +168,7 @@ def fetch_news_articles(
         index = VectorStoreIndex(nodes, storage_context=storage_context_opoint)
 
         retriever = index.as_retriever(similarity_top_k=5)
-        
+
         query = f"{company_name}"
         if additional_keywords:
             query += f" {additional_keywords}"
@@ -205,7 +208,8 @@ storage_context_elastic = StorageContext.from_defaults(vector_store=chroma_store
 
 def search_corporate_reports(query_text: str, index: str = "index_m1", top_hits: int = 5):
     """
-    Search the corporate documents database on an Elasticsearch index using a semantic text expansion query.
+    Search the corporate documents database and returns a list of dictionaries
+    representing matching documents with metadata.
     """
         
     search_query = {
