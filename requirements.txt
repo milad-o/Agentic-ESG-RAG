@@ -5,3 +5,4 @@ elasticsearch==8.15.1
 fastapi==0.115.4
 uvicorn==0.32.0
 python-dotenv==1.0.1
+ibm-watson==8.1.0
