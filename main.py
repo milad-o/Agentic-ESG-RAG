@@ -363,7 +363,6 @@ wd_qe_tool = QueryEngineTool(
 
 
 # Memory for the agent ------------------------
-# Memory for the agent ------------------------
 from llama_index.core.memory import (
     VectorMemory,
     SimpleComposableMemory,
@@ -394,7 +393,11 @@ composable_memory = SimpleComposableMemory.from_defaults(
 
 agent = ReActAgent(
     llm=llm,
-    tools=[*es_tool_ls, *opoint_tool_ls, wd_qe_tool],
+    tools=[
+        *es_tool_ls, 
+        *opoint_tool_ls,
+        # wd_qe_tool # Deactivated for now
+    ],
     verbose=True,
     memory=composable_memory,
     max_iterations=20,
