@@ -215,65 +215,146 @@ from llama_index.core.tools.tool_spec.load_and_search import LoadAndSearchToolSp
 es_tool_ls = LoadAndSearchToolSpec.from_defaults(es_tool).to_tool_list()
 opoint_tool_ls = LoadAndSearchToolSpec.from_defaults(opoint_tool).to_tool_list()
 
-from llama_index.core.agent import ReActAgent
-from llama_index.core.tools import QueryEngineTool, ToolMetadata, FunctionTool
 
-def get_company_metrics():
+# WD Sub-Agent functions and tools
+from ibm_watson import DiscoveryV2
+from ibm_cloud_sdk_core.authenticators import IAMAuthenticator
+
+WD_URL = os.getenv("WD_URL")
+IBM_CLOUD_API_KEY = os.getenv("IBM_CLOUD_API_KEY")
+
+authenticator = IAMAuthenticator(IBM_CLOUD_API_KEY)
+
+discovery = DiscoveryV2(version="2023-03-31", authenticator=authenticator)
+
+discovery.set_service_url(WD_URL)
+
+
+def get_wd_projects() -> List[Dict[str, Any]]:
     """
-    Returns a table of company metrics and industry codes.
-    
-    No arguments are required.
-
-    """
-
-    table = """
-    companyName,industry_code,co2e_emission,MATERIALITY_INSIGHT,SUPPLY_CHAIN_INSIGHT,GHG_EMISSIONS_INSIGHT,LABOR_PRACTICES_INSIGHT,BUSINESS_ETHICS_INSIGHT,ENERGY_INSIGHT,DATA_SECURITY_INSIGHT
-    Bruce Power,221,430901,68,65,74,57,38,69,31
-    Ontario Power Generation,221,430901,57,62,67,42,35,75,34
-    Northwest Natural Gas Co,221,187942,69,0,68,0,0,76,0
-    "Burns & Mcdonnell, Inc.",221,187942,62,67,76,51,49,80,0
-    Invista,325,47279,60,67,67,56,32,67,35
-    """
-    return table
-
-def get_industry_averages():
-    """
-    Returns a table of industry averages.
-    
-    No arguments are required.
-
+    Use this function to fetch the list of projects from the Watson Discovery.
     """
 
+    projects = discovery.list_projects().get_result()["projects"]
+    return projects
 
-    table = """
-    Industry,Industry_code,co2 emission (sector),MATERIALITY_INSIGHT,SUPPLY_CHAIN_INSIGHT,GHG_EMISSIONS_INSIGHT,LABOR_PRACTICES_INSIGHT,BUSINESS_ETHICS_INSIGHT,ENERGY_INSIGHT,DATA_SECURITY_INSIGHT
-    Mining and Quarrying (except Oil and Gas),212,"97,021",69,63,61,50,35,76,29
-    Utilities,221,"430,901",57,62,67,42,35,75,34
-    Paper Manufacturing,322,"187,942",62,67,76,51,49,80,
-    Chemical Manufacturing,325,"142,012",59,67,66,51,41,66,38
-    Fabricated Metal Product Manufacturing,332,"103,164",61,59,71,53,37,69,60
-    Waste Management and Remediation Services,562,"47,279",60,67,67,56,32,67,35
+
+def get_wd_collections(project_id: str) -> List[Dict[str, Any]]:
+    """
+    Use this function to fetch the list of collections for a specific project from the Watson Discovery.
     """
 
-    return table
-    
-b_company_metrics_tool = FunctionTool.from_defaults(get_company_metrics)
-b_industry_averages_tool = FunctionTool.from_defaults(get_industry_averages)
+    collections = discovery.list_collections(project_id).get_result()["collections"]
+    return collections
 
 
-benchmark_qe = ReActAgent.from_tools(
-    tools=[b_company_metrics_tool, b_industry_averages_tool],
-    verbose=True,
+def get_wd_fields(project_id: str, collection_ids: List[str]) -> List[Dict[str, Any]]:
+    """
+    Instructions
+    ------------
+    Use this function to fetch the list of fields for a specific project-collection from the Watson Discovery.
+    """
+
+    response = discovery.list_fields(
+        project_id=project_id, collection_ids=collection_ids
+    ).get_result()["fields"]
+
+    fields = []
+
+    for field in response:
+        if field["field"].find("enriched_") == -1:
+            fields.append({field["field"]: field["type"]})
+    return fields
+
+
+from typing import List
+
+
+def get_wd_aggregated_results(
+    variable: str,
+    agg_func: str,
+    project_id: str = "b2c1b89a-5841-446b-b3f7-e569d3170e32",
+    collection_ids: List[str] = ["026b499f-57fc-edaf-0000-019291a70408"],
+) -> dict:
+    """
+    Returns the aggregated results for a variable for a given project,
+    collection, and filter from Watson Discovery.
+
+    Direction for using this function:
+    ----------
+    Start with finding the correct `variable` from respected `get_wd_fields` function.
+
+    Args
+    ----------
+    `variable`: list of all variables can be returned using the `get_wd_fields` function
+
+    `project_id`: list of all project ids can be returned using the `get_project_id` function
+
+    `collection_ids`: list of all collection ids can be returned using the `get_collection_id` function
+
+    `agg_func`: the aggregation function can be: "average", "sum", "min", "max", "sum"
+
+    Factset Insight
+    ----------
+    - project_id = 'b2c1b89a-5841-446b-b3f7-e569d3170e32'
+    - collection_ids = ['026b499f-57fc-edaf-0000-019291a70408']
+    """
+    response = discovery.query(
+        project_id=project_id,
+        collection_ids=collection_ids,
+        aggregation=f"{agg_func}({variable})",
+    ).get_result()
+
+    result = {
+        "matching_results": response["matching_results"],
+        "value": response["aggregations"][0]["value"],
+    }
+
+    return result
+
+
+get_wd_projects_tool = FunctionTool.from_defaults(get_wd_projects)
+get_wd_collections_tool = FunctionTool.from_defaults(get_wd_collections)
+get_wd_fields_tool = FunctionTool.from_defaults(get_wd_fields)
+get_wd_aggregated_results_tool = FunctionTool.from_defaults(get_wd_aggregated_results)
+
+from llama_index.core.objects import ObjectIndex, SimpleToolNodeMapping
+from llama_index.core import VectorStoreIndex
+
+wd_tools = [
+    get_wd_projects_tool,
+    get_wd_collections_tool,
+    get_wd_fields_tool,
+    get_wd_aggregated_results_tool,
+]
+
+wd_obj_index = ObjectIndex.from_objects(
+    wd_tools,
+    node_mapping=SimpleToolNodeMapping.from_objects(wd_tools),
+    index_cls=VectorStoreIndex,
 )
 
-benchmark_qe_tool = QueryEngineTool(
-    query_engine=benchmark_qe,
+wd_obj_retriever = wd_obj_index.as_retriever()
+
+from llama_index.core.agent import ReActAgent
+
+## Watson Discovery agent and agent-tool
+wd_agent = ReActAgent.from_tools(
+    tool_retriever=wd_obj_retriever, verbose=True, max_iterations=20,
+    context="""
+    Watson Discovery hierarchy: Projects -> Collections -> Documents -> Fields
+    """
+)
+
+from llama_index.core.tools import QueryEngineTool, ToolMetadata
+
+
+wd_qe_tool = QueryEngineTool(
+    query_engine=wd_agent,
     metadata=ToolMetadata(
-        name="benchmark_qe_tool",
-        description=
-        """
-        Use this agent to answer any questions regarding comparison
-        between companies to their industry average.
+        name="wd_qe_tool",
+        description="""
+        Use this agent to answer questions about Watson Discovery.
 
         It can also be used to return industry averages.
         """,
@@ -315,11 +396,15 @@ agent = ReActAgent(
     tools=[
         *es_tool_ls, 
         *opoint_tool_ls,
-        benchmark_qe_tool
+        # wd_qe_tool # Deactivated for now
     ],
     verbose=True,
     memory=composable_memory,
-    max_iterations=20
+    max_iterations=20,
+    context="""
+    You are a top-level agent designed to choose the most appropriate 
+    tool or agent to answer a user's question.
+    """,
 )
 
 # FastApi app setup ----------------------------
