@@ -2,8 +2,6 @@
 # This is the main file for the Agentic_RAG_App
 # It contains the FastAPI app, the main function, and the index function
 
-# If you're running this locally, use `uvicorn` to serve the app
-
 # FastAPI app setup ----------------------------
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +32,8 @@ ES_URL = os.getenv("ES_URL")
 ES_USERNAME = os.getenv("ES_USERNAME")
 ES_PASSWORD = os.getenv("ES_PASSWORD")
 ES_CERT = os.getenv("ES_CERT")
+WD_URL = os.getenv("WD_URL")
+
 
 # Decode the Base64 certificate for Elasticsearch
 es_cert = base64.b64decode(ES_CERT).decode("utf-8")
@@ -73,22 +73,29 @@ Settings.llm = llm
 
 # Function/tools for the agent -------------------
 ## Opoint function
-import requests
-
+import aiohttp
+from typing import Dict, List, Any, Optional
 from llama_index.core import Document
-from typing import List, Dict, Any, Optional
 
-def fetch_news_articles(
+async def fetch_news_articles(
     company_name: str, additional_keywords: Optional[str] = None, number_of_articles=20
 ) -> List[Dict[str, Any]]:
     """
     Fetches recent news articles related to a specified company and additional keywords
     and returns a list of dictionaries representing chunks of the articles with metadata.
+
+    Args:
+    - company_name (str): The name of the company to fetch articles for.
+    - additional_keywords (str, optional): Additional keywords to filter the articles by.
+    - number_of_articles (int, optional): The number of articles to fetch. Defaults to 20.
+
+    Returns:
+    - List[Dict[str, Any]]: A list of Document objects, where each represents a chunk of the articles.
     """
 
     # Base Opoint API URL and authorization token
     api_url = "https://api.opoint.com/search/"
-    opoint_token = OPOINT_TOKEN  # replace with your Opoint token
+    opoint_token = OPOINT_TOKEN  # Replace with your Opoint token
 
     headers = {
         "Authorization": f"Token {opoint_token}",
@@ -113,50 +120,39 @@ def fetch_news_articles(
         },
     }
 
-    try:
-        # Sending the POST request to the API
-        response = requests.post(api_url, headers=headers, json=payload)
-        response_data = response.json()["searchresult"]["document"]
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(api_url, headers=headers, json=payload) as response:
+                response.raise_for_status()
+                response_data = await response.json()
 
-        # Extracting articles and relevant fields
-        articles = []
-        for article in response_data:
-            articles.append(
-                {
-                    "header": article.get("header", {}).get("text", ""),
-                    "text": article.get("body", {}).get("text", ""),
-                    "metadata": {
-                        "url": article.get("orig_url", ""),
-                        "rank_global": article.get("site_rank", {}).get(
-                            "rank_global", None
-                        ),
-                        "rank_country": article.get("site_rank", {}).get(
+            documents = response_data.get("searchresult", {}).get("document", [])
+            results = [
+                Document(
+                    text=f"Heading: {doc['header']}\n\n{doc['body']['text']}",
+                    metadata={
+                        "url": doc.get("orig_url", ""),
+                        "rank_global": doc.get("site_rank", {}).get("rank_global", None),
+                        "rank_country": doc.get("site_rank", {}).get(
                             "rank_country", None
                         ),
                     },
-                }
-            )
-
-        results = []
-        for article in articles:
-            results.append(
-                Document(
-                    text=f"Heading: article['text']\n\n{article['text']}",
-                    metadata=article["metadata"],
                 )
-            )
+                for doc in documents
+            ]
+            return results
 
-        return results
-
-    except requests.RequestException as e:
-        print(f"An error occurred while fetching articles: {e}")
-        return []
+        except aiohttp.ClientError as e:
+            print(f"Error fetching articles: {e}")
+            return []
 
 
 ## Elasticsearch function
-from elasticsearch import Elasticsearch
+from elasticsearch import AsyncElasticsearch
 
-es_client = Elasticsearch(
+
+## Elasticsearch function
+es_client = AsyncElasticsearch(
     ES_URL,
     basic_auth=(ES_USERNAME, ES_PASSWORD),
     ca_certs=temp_cert_path,
@@ -164,12 +160,23 @@ es_client = Elasticsearch(
 )
 
 
-def search_corporate_reports(
+from typing import Dict, List, Any
+
+
+async def search_corporate_reports(
     query_text: str, index: str = "index_m1", top_hits: int = 10
 ) -> List[Dict[str, Any]]:
     """
     Search the corporate documents database and returns a list of dictionaries
     representing matching documents with metadata.
+
+    Args:
+    - query_text (str): The text to search for in the documents.
+    - index (str, optional): The name of the Elasticsearch index to search. Defaults to "index_m1".
+    - top_hits (int, optional): The maximum number of top hits to return. Defaults to 10.
+
+    Returns:
+    - List[Dict[str, Any]]: A list of dictionaries representing matching documents with metadata.
     """
 
     search_query = {
@@ -186,12 +193,10 @@ def search_corporate_reports(
         "track_total_hits": False,
     }
 
-    hits = es_client.search(index=index, body=search_query)["hits"]["hits"]
-
-    results = []
-
-    for hit in hits:
-        results.append(
+    try:
+        response = await es_client.search(index=index, body=search_query)
+        hits = response["hits"]["hits"]
+        results = [
             Document(
                 text=hit["_source"]["body_content_field"],
                 metadata={
@@ -199,10 +204,13 @@ def search_corporate_reports(
                     "file_name": hit["_source"]["file_name"],
                 },
             )
-        )
+            for hit in hits
+        ]
+        return results
 
-    return results
-
+    except Exception as e:
+        print(f"Error searching Elasticsearch: {e}")
+        return []
 
 # Agent tools and subsequent L&S tools
 from llama_index.core.tools import FunctionTool
@@ -215,6 +223,12 @@ from llama_index.core.tools.tool_spec.load_and_search import LoadAndSearchToolSp
 es_tool_ls = LoadAndSearchToolSpec.from_defaults(es_tool).to_tool_list()
 opoint_tool_ls = LoadAndSearchToolSpec.from_defaults(opoint_tool).to_tool_list()
 
+
+# WD Sub-Agent functions and tools
+from ibm_watson import DiscoveryV2
+from ibm_cloud_sdk_core.authenticators import IAMAuthenticator
+
+# Benchmarking tools ----------------------------
 from llama_index.core.agent import ReActAgent
 from llama_index.core.tools import QueryEngineTool, ToolMetadata, FunctionTool
 
@@ -227,7 +241,7 @@ def get_company_metrics():
     """
 
     table = """
-    companyName,industry_code,co2 emission (metric tons),MATERIALITY_INSIGHT,SUPPLY_CHAIN_INSIGHT,GHG_EMISSIONS_INSIGHT,LABOR_PRACTICES_INSIGHT,BUSINESS_ETHICS_INSIGHT,ENERGY_INSIGHT,DATA_SECURITY_INSIGHT
+    companyName,industry_code,co2e_emission,MATERIALITY_INSIGHT,SUPPLY_CHAIN_INSIGHT,GHG_EMISSIONS_INSIGHT,LABOR_PRACTICES_INSIGHT,BUSINESS_ETHICS_INSIGHT,ENERGY_INSIGHT,DATA_SECURITY_INSIGHT
     Bruce Power,221,430901,68,65,74,57,38,69,31
     Ontario Power Generation,221,430901,57,62,67,42,35,75,34
     Northwest Natural Gas Co,221,187942,69,0,68,0,0,76,0
@@ -246,7 +260,7 @@ def get_industry_averages():
 
 
     table = """
-    Industry,Industry_code,co2 emission (metric tons),MATERIALITY_INSIGHT,SUPPLY_CHAIN_INSIGHT,GHG_EMISSIONS_INSIGHT,LABOR_PRACTICES_INSIGHT,BUSINESS_ETHICS_INSIGHT,ENERGY_INSIGHT,DATA_SECURITY_INSIGHT
+    Industry,Industry_code,co2 emission (sector),MATERIALITY_INSIGHT,SUPPLY_CHAIN_INSIGHT,GHG_EMISSIONS_INSIGHT,LABOR_PRACTICES_INSIGHT,BUSINESS_ETHICS_INSIGHT,ENERGY_INSIGHT,DATA_SECURITY_INSIGHT
     Mining and Quarrying (except Oil and Gas),212,"97,021",69,63,61,50,35,76,29
     Utilities,221,"430,901",57,62,67,42,35,75,34
     Paper Manufacturing,322,"187,942",62,67,76,51,49,80,
@@ -273,11 +287,15 @@ benchmark_qe_tool = QueryEngineTool(
         description=
         """
         Use this agent to answer any questions regarding comparison
+        between companies to their industry average.
+
+        It can also be used to return industry averages.
         """,
     ),
 )
 
 
+# Memory for the agent ------------------------
 # Memory for the agent ------------------------
 from llama_index.core.memory import (
     VectorMemory,
@@ -306,21 +324,19 @@ composable_memory = SimpleComposableMemory.from_defaults(
 )
 
 # Main Agent ----------------------------------
+from llama_index.core.agent import ReActAgent
 
 agent = ReActAgent(
     llm=llm,
     tools=[
         *es_tool_ls, 
-        *opoint_tool_ls,
+        *opoint_tool_ls, 
         benchmark_qe_tool
     ],
     verbose=True,
     memory=composable_memory,
     max_iterations=20,
-    context="""
-    RULES:
-    - You must use the term 'CoRel8ed average' when referring to the industry average.
-    """
+    context="RULES: Use 'CoRel8ed average' for industry averages.",
 )
 
 # FastApi app setup ----------------------------
@@ -332,34 +348,25 @@ def index():
 ## Main endpoint for querying the agent
 from pydantic import BaseModel
 
+@app.get("/")
+def index():
+    return {"Message": "Agentic RAG API is running"}
+
 class QuestionRequest(BaseModel):
     question: str
 
 @app.post("/query")
 async def query_endpoint(request: QuestionRequest):
     try:
-        # Query the agent and get the response as a string
-        reply = agent.chat(request.question)
-        # Return the structured response and the processed raw_output
-        result = {
+        reply = await agent.achat(request.question)
+        return {
             "response": reply.response,
             "sources": [item.dict() for item in reply.sources],
         }
-
-        return result
-    except requests.exceptions.ConnectionError:
-        raise HTTPException(
-            status_code=503,
-            detail="Unable to connect to the knowledge base. Please try again later.",
-        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# If you're running this locally, use Uvicorn to serve the app
+# Run FastAPI with uvicorn ---------------------------
 if __name__ == "__main__":
-    import sys
     import uvicorn
-
-    if "uvicorn" not in sys.argv[0]:
-        uvicorn.run("main:app", host="0.0.0.0", port=4050, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=4050, reload=True)
