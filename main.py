@@ -19,21 +19,33 @@ app.add_middleware(
 )
 
 # Load environment variables -------------------
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
 import base64
 import tempfile
+
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 
 WX_PROJECT_ID = os.getenv("WX_PROJECT_ID")
 IBM_CLOUD_API_KEY = os.getenv("IBM_CLOUD_API_KEY")
 WX_URL = os.getenv("WX_URL")
-OPOINT_TOKEN = "76bbbc556719f1d22b70dedfec56cd255d76b96e"  # the old one
+OPOINT_TOKEN = os.getenv("OPOINT_TOKEN")
 ES_URL = os.getenv("ES_URL")
 ES_USERNAME = os.getenv("ES_USERNAME")
 ES_PASSWORD = os.getenv("ES_PASSWORD")
 ES_CERT = os.getenv("ES_CERT")
+
+# Decode the Base64 certificate
+es_cert = base64.b64decode(ES_CERT).decode("utf-8")
+
+# Write the decoded certificate to a temporary file
+with tempfile.NamedTemporaryFile(delete=False) as temp_cert_file:
+    temp_cert_file.write(es_cert.encode("utf-8"))
+    temp_cert_path = temp_cert_file.name
+
+
 
 # Decode the Base64 certificate for Elasticsearch
 es_cert = base64.b64decode(ES_CERT).decode("utf-8")
@@ -43,52 +55,132 @@ with tempfile.NamedTemporaryFile(delete=False) as temp_cert_file:
     temp_cert_file.write(es_cert.encode("utf-8"))
     temp_cert_path = temp_cert_file.name
 
+# Required imports ----------------------------
+from langchain_ibm import WatsonxEmbeddings, WatsonxLLM
 
 # LLM and Embedding model ---------------------
-from llama_index.llms.ibm import WatsonxLLM
+from ibm_watsonx_ai.foundation_models.utils.enums import EmbeddingTypes
+from ibm_watsonx_ai.metanames import GenTextParamsMetaNames as GenParams
 
 llm = WatsonxLLM(
-    model_id="mistralai/mistral-large",
-    apikey=IBM_CLOUD_API_KEY,
+    model_id="ibm/granite-3-8b-instruct",
     url=WX_URL,
+    apikey=IBM_CLOUD_API_KEY,
     project_id=WX_PROJECT_ID,
+    params={
+        GenParams.DECODING_METHOD: "greedy",
+        GenParams.TEMPERATURE: 0,
+        GenParams.MIN_NEW_TOKENS: 5,
+        GenParams.MAX_NEW_TOKENS: 250,
+        GenParams.STOP_SEQUENCES: ["Human:", "Observation"],
+    },
 )
-
-from llama_index.embeddings.ibm import WatsonxEmbeddings
 
 embed_model = WatsonxEmbeddings(
-    model_id="ibm/slate-125m-english-rtrvr",
+    model_id=EmbeddingTypes.IBM_SLATE_30M_ENG.value,
     apikey=IBM_CLOUD_API_KEY,
     url=WX_URL,
     project_id=WX_PROJECT_ID,
-    truncate_input_tokens= 10
 )
 
-## Setting default llm and embedding model for llama_index
-from llama_index.core import Settings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-Settings.embed_model = embed_model
-Settings.llm = llm
+text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+    chunk_size=256, chunk_overlap=64
+)
 
 
 # Function/tools for the agent -------------------
-## Opoint function
-import requests
+import aiohttp
+from typing import Dict, List, Any, Optional
+from langchain_core.documents import Document
+from langchain_chroma import Chroma
+from langchain_core.tools import tool
 
-from llama_index.core import Document
-from typing import List, Dict, Any, Optional
 
-def fetch_news_articles(
-    company_name: str, additional_keywords: Optional[str] = None, number_of_articles=20
+@tool
+async def search_news_articles(
+    header: str, additional_keywords: Optional[str] = None, number_of_articles: int = 5
 ) -> List[Dict[str, Any]]:
     """
-    Fetches recent news articles related to a specified company and additional keywords
-    and returns a list of dictionaries representing chunks of the articles with metadata.
+    Fetches recent news articles related to a specified company and additional keywords.
+
+    Parameters:
+    ----------
+    header : str
+        The headline keyword to search for in the articles. Usually the name of the company.
+
+    body : Optional[str], optional
+        Additional keywords to filter articles based on their text content. Default is None.
+
+    number_of_articles : int, optional
+        The number of articles to fetch. Defaults to 5.
+
+    Returns:
+    -------
+    List[Dict[str, Any]]
+        - If articles are found:
+            A list of Document objects containing the fetched articles, including metadata such as the URL, global rank, and country rank.
+        - If no articles are found:
+            A list containing a dictionary with a "message" key indicating no results and encouraging a retry with body-only keywords.
+        - If an error occurs:
+            A list containing a dictionary with a "message" key describing the error.
     """
+
+    async def fetch_articles(search_term: str) -> List[Document]:
+        """
+        Helper function to send a search request to the Opoint API and process the results.
+
+        Parameters:
+        ----------
+        search_term : str
+            The search query to be sent to the Opoint API.
+
+        Returns:
+        -------
+        List[Document]
+            A list of Document objects representing the articles found.
+        """
+        payload = {
+            "searchterm": search_term,
+            "params": {
+                "requestedarticles": number_of_articles,
+                "main": {"header": 1, "text": 1},
+                "groupidentical": True,
+            },
+        }
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(
+                    api_url, headers=headers, json=payload
+                ) as response:
+                    response.raise_for_status()
+                    response_data = await response.json()
+
+                documents = response_data.get("searchresult", {}).get("document", [])
+                return [
+                    Document(
+                        page_content=f"Heading: {doc['header']}\n\n{doc['body']['text']}",
+                        metadata={
+                            "url": doc.get("orig_url", ""),
+                            "rank_global": doc.get("site_rank", {}).get(
+                                "rank_global", None
+                            ),
+                            "rank_country": doc.get("site_rank", {}).get(
+                                "rank_country", None
+                            ),
+                        },
+                    )
+                    for doc in documents
+                ]
+            except aiohttp.ClientError as e:
+                print(f"Error fetching articles: {e}")
+                return []
 
     # Base Opoint API URL and authorization token
     api_url = "https://api.opoint.com/search/"
-    opoint_token = OPOINT_TOKEN  # replace with your Opoint token
+    opoint_token = OPOINT_TOKEN  # Replace with your Opoint token
 
     headers = {
         "Authorization": f"Token {opoint_token}",
@@ -96,80 +188,74 @@ def fetch_news_articles(
         "Accept": "application/json",
     }
 
-    # Constructing the search term based on company name and additional keywords
-    search_term = f"header:'{company_name}'"
+    # Initial search using header and body keywords
+    search_term = f"header:'{header}'"
     if additional_keywords:
-        search_term += f" AND body:{additional_keywords}"
-    search_term += " globalrank<1000 profile:523024"
+        search_term += f" AND {additional_keywords}"
+    search_term += " profile:523024"
     search_term = f"({search_term})"
 
-    # Defining payload with query parameters
-    payload = {
-        "searchterm": search_term,
-        "params": {
-            "requestedarticles": number_of_articles,
-            "main": {"header": 1, "text": 1},
-            "groupidentical": True,
-        },
-    }
+    docs = await fetch_articles(search_term)
+    if docs:
+        # Process and split documents if found
+        doc_splits = text_splitter.split_documents(docs)
+        vectorstore = Chroma.from_documents(
+            documents=doc_splits,
+            embedding=embed_model,
+            collection_name="opoint",
+        )
+        retriever = vectorstore.as_retriever()
+        return await retriever.ainvoke(search_term)
 
-    try:
-        # Sending the POST request to the API
-        response = requests.post(api_url, headers=headers, json=payload)
-        response_data = response.json()["searchresult"]["document"]
-
-        # Extracting articles and relevant fields
-        articles = []
-        for article in response_data:
-            articles.append(
-                {
-                    "header": article.get("header", {}).get("text", ""),
-                    "text": article.get("body", {}).get("text", ""),
-                    "metadata": {
-                        "url": article.get("orig_url", ""),
-                        "rank_global": article.get("site_rank", {}).get(
-                            "rank_global", None
-                        ),
-                        "rank_country": article.get("site_rank", {}).get(
-                            "rank_country", None
-                        ),
-                    },
-                }
+    # Retry with body-only search if header+body search fails
+    if additional_keywords:
+        body_search_term = f"body:{additional_keywords}"
+        docs = await fetch_articles(f"({body_search_term})")
+        if docs:
+            doc_splits = text_splitter.split_documents(docs)
+            vectorstore = Chroma.from_documents(
+                documents=doc_splits,
+                embedding=embed_model,
+                collection_name="opoint_body_only",
             )
+            retriever = vectorstore.as_retriever()
+            return await retriever.ainvoke(body_search_term)
 
-        results = []
-        for article in articles:
-            results.append(
-                Document(
-                    text=f"Heading: article['text']\n\n{article['text']}",
-                    metadata=article["metadata"],
-                )
-            )
-
-        return results
-
-    except requests.RequestException as e:
-        print(f"An error occurred while fetching articles: {e}")
-        return []
+    # Notify the agent if no results are found in both searches
+    return [
+        {
+            "message": f"No news articles found for '{header}' with the specified criteria. "
+            f"Retry with relaxed filter through additional keywords and no header: '{header} {additional_keywords}' for better results."
+        }
+    ]
+from elasticsearch import AsyncElasticsearch
 
 
 ## Elasticsearch function
-from elasticsearch import Elasticsearch
-
-es_client = Elasticsearch(
+es_client = AsyncElasticsearch(
     ES_URL,
     basic_auth=(ES_USERNAME, ES_PASSWORD),
     ca_certs=temp_cert_path,
     verify_certs=True,
 )
 
+from typing import Dict, List, Any
 
-def search_corporate_reports(
+@tool
+async def search_corporate_reports(
     query_text: str, index: str = "index_m1", top_hits: int = 10
 ) -> List[Dict[str, Any]]:
     """
     Search the corporate documents database and returns a list of dictionaries
     representing matching documents with metadata.
+
+    Args:
+    - query_text (str): The text to search for in the documents.
+    - index (str, optional): The name of the Elasticsearch index to search. Defaults to "index_m1".
+    - top_hits (int, optional): The maximum number of top hits to return. Defaults to 10.
+
+    Returns:
+    - List[Dict[str, Any]]: A list of dictionaries representing matching documents with metadata.
     """
 
     search_query = {
@@ -186,225 +272,111 @@ def search_corporate_reports(
         "track_total_hits": False,
     }
 
-    hits = es_client.search(index=index, body=search_query)["hits"]["hits"]
-
-    results = []
-
-    for hit in hits:
-        results.append(
+    try:
+        response = await es_client.search(index=index, body=search_query)
+        hits = response["hits"]["hits"]
+        results = [
             Document(
-                text=hit["_source"]["body_content_field"],
+                page_content=hit["_source"]["body_content_field"],
                 metadata={
                     "page_label": hit["_source"]["metadata"]["page_label"],
                     "file_name": hit["_source"]["file_name"],
                 },
             )
-        )
+            for hit in hits
+        ]
+        return results
 
-    return results
+    except Exception as e:
+        print(f"Error searching Elasticsearch: {e}")
+        return []
+    
+# Set up list of tools
+tools = [search_corporate_reports, search_news_articles]
 
+# Setting up prompts for the agent
 
-# Agent tools and subsequent L&S tools
-from llama_index.core.tools import FunctionTool
+system_prompt = """Respond to the human as helpfully and accurately as possible. You have access to the following tools: {tools}
+Use a json blob to specify a tool by providing an action key (tool name) and an action_input key (tool input).
+Valid "action" values: "Final Answer" or {tool_names}
+Provide only ONE action per $JSON_BLOB, as shown:"
+```
+{{
+  "action": $TOOL_NAME,
+  "action_input": $INPUT
+}}
+```
+Follow this format:
+Question: input question to answer
+Thought: consider previous and subsequent steps
+Action:
+```
+$JSON_BLOB
+```
+Observation: action result
+... (repeat Thought/Action/Observation N times)
+Thought: I know what to respond
+Action:
+```
+{{
+  "action": "Final Answer",
+  "action_input": "Final response to human"
+}}
+Begin! Reminder to ALWAYS respond with a valid json blob of a single action.
+Respond directly if appropriate. Format is Action:```$JSON_BLOB```then Observation"""
 
-es_tool = FunctionTool.from_defaults(search_corporate_reports)
-opoint_tool = FunctionTool.from_defaults(fetch_news_articles)
+human_prompt = """{input}
+{agent_scratchpad}
+(reminder to always respond in a JSON blob)"""
 
-from llama_index.core.tools.tool_spec.load_and_search import LoadAndSearchToolSpec
-
-es_tool_ls = LoadAndSearchToolSpec.from_defaults(es_tool).to_tool_list()
-opoint_tool_ls = LoadAndSearchToolSpec.from_defaults(opoint_tool).to_tool_list()
-
-
-# WD Sub-Agent functions and tools
-from ibm_watson import DiscoveryV2
-from ibm_cloud_sdk_core.authenticators import IAMAuthenticator
-
-WD_URL = os.getenv("WD_URL")
-IBM_CLOUD_API_KEY = os.getenv("IBM_CLOUD_API_KEY")
-
-authenticator = IAMAuthenticator(IBM_CLOUD_API_KEY)
-
-discovery = DiscoveryV2(version="2023-03-31", authenticator=authenticator)
-
-discovery.set_service_url(WD_URL)
-
-
-def get_wd_projects() -> List[Dict[str, Any]]:
-    """
-    Use this function to fetch the list of projects from the Watson Discovery.
-    """
-
-    projects = discovery.list_projects().get_result()["projects"]
-    return projects
-
-
-def get_wd_collections(project_id: str) -> List[Dict[str, Any]]:
-    """
-    Use this function to fetch the list of collections for a specific project from the Watson Discovery.
-    """
-
-    collections = discovery.list_collections(project_id).get_result()["collections"]
-    return collections
-
-
-def get_wd_fields(project_id: str, collection_ids: List[str]) -> List[Dict[str, Any]]:
-    """
-    Instructions
-    ------------
-    Use this function to fetch the list of fields for a specific project-collection from the Watson Discovery.
-    """
-
-    response = discovery.list_fields(
-        project_id=project_id, collection_ids=collection_ids
-    ).get_result()["fields"]
-
-    fields = []
-
-    for field in response:
-        if field["field"].find("enriched_") == -1:
-            fields.append({field["field"]: field["type"]})
-    return fields
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 
-from typing import List
-
-
-def get_wd_aggregated_results(
-    variable: str,
-    agg_func: str,
-    project_id: str = "b2c1b89a-5841-446b-b3f7-e569d3170e32",
-    collection_ids: List[str] = ["026b499f-57fc-edaf-0000-019291a70408"],
-) -> dict:
-    """
-    Returns the aggregated results for a variable for a given project,
-    collection, and filter from Watson Discovery.
-
-    Direction for using this function:
-    ----------
-    Start with finding the correct `variable` from respected `get_wd_fields` function.
-
-    Args
-    ----------
-    `variable`: list of all variables can be returned using the `get_wd_fields` function
-
-    `project_id`: list of all project ids can be returned using the `get_project_id` function
-
-    `collection_ids`: list of all collection ids can be returned using the `get_collection_id` function
-
-    `agg_func`: the aggregation function can be: "average", "sum", "min", "max", "sum"
-
-    Factset Insight
-    ----------
-    - project_id = 'b2c1b89a-5841-446b-b3f7-e569d3170e32'
-    - collection_ids = ['026b499f-57fc-edaf-0000-019291a70408']
-    """
-    response = discovery.query(
-        project_id=project_id,
-        collection_ids=collection_ids,
-        aggregation=f"{agg_func}({variable})",
-    ).get_result()
-
-    result = {
-        "matching_results": response["matching_results"],
-        "value": response["aggregations"][0]["value"],
-    }
-
-    return result
-
-
-get_wd_projects_tool = FunctionTool.from_defaults(get_wd_projects)
-get_wd_collections_tool = FunctionTool.from_defaults(get_wd_collections)
-get_wd_fields_tool = FunctionTool.from_defaults(get_wd_fields)
-get_wd_aggregated_results_tool = FunctionTool.from_defaults(get_wd_aggregated_results)
-
-from llama_index.core.objects import ObjectIndex, SimpleToolNodeMapping
-from llama_index.core import VectorStoreIndex
-
-wd_tools = [
-    get_wd_projects_tool,
-    get_wd_collections_tool,
-    get_wd_fields_tool,
-    get_wd_aggregated_results_tool,
-]
-
-wd_obj_index = ObjectIndex.from_objects(
-    wd_tools,
-    node_mapping=SimpleToolNodeMapping.from_objects(wd_tools),
-    index_cls=VectorStoreIndex,
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", system_prompt),
+        MessagesPlaceholder("chat_history", optional=True),
+        ("human", human_prompt),
+    ]
 )
 
-wd_obj_retriever = wd_obj_index.as_retriever()
-
-from llama_index.core.agent import ReActAgent
-
-## Watson Discovery agent and agent-tool
-wd_agent = ReActAgent.from_tools(
-    tool_retriever=wd_obj_retriever, verbose=True, max_iterations=20,
-    context="""
-    Watson Discovery hierarchy: Projects -> Collections -> Documents -> Fields
-    """
-)
-
-from llama_index.core.tools import QueryEngineTool, ToolMetadata
+from langchain.tools.render import render_text_description_and_args
 
 
-wd_qe_tool = QueryEngineTool(
-    query_engine=wd_agent,
-    metadata=ToolMetadata(
-        name="wd_qe_tool",
-        description="""
-        Use this agent to answer questions about Watson Discovery.
-
-        It can also be used to return industry averages.
-        """,
-    ),
+prompt = prompt.partial(
+    tools=render_text_description_and_args(list(tools)),
+    tool_names=", ".join([t.name for t in tools]),
 )
 
 
-# Memory for the agent ------------------------
-from llama_index.core.memory import (
-    VectorMemory,
-    SimpleComposableMemory,
-    ChatMemoryBuffer,
+# Memory setup
+from langchain.memory import ConversationBufferMemory
+
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
+# Langchain setup
+from langchain_core.runnables import RunnablePassthrough
+from langchain.agents.format_scratchpad import format_log_to_str
+from langchain.agents.output_parsers import JSONAgentOutputParser
+from langchain.agents import AgentExecutor
+
+chain = (
+    RunnablePassthrough.assign(
+        agent_scratchpad=lambda x: format_log_to_str(x["intermediate_steps"]),
+        chat_history=lambda x: memory.chat_memory.messages,
+    )
+    | prompt
+    | llm
+    | JSONAgentOutputParser()
 )
 
-from chromadb import EphemeralClient
-from llama_index.vector_stores.chroma import ChromaVectorStore
-
-client = EphemeralClient()
-memory_chroma_collection = client.get_or_create_collection("agent_memory")
-memory_vector_store = ChromaVectorStore(memory_chroma_collection)
-
-vector_memory = VectorMemory.from_defaults(
-    vector_store=None,
-    embed_model=embed_model,
-    retriever_kwargs={"similarity_top_k": 3},
-)
-
-chat_memory_buffer = ChatMemoryBuffer.from_defaults()
-
-composable_memory = SimpleComposableMemory.from_defaults(
-    primary_memory=chat_memory_buffer,
-    secondary_memory_sources=[vector_memory],
-)
-
-# Main Agent ----------------------------------
-
-agent = ReActAgent(
-    llm=llm,
-    tools=[
-        *es_tool_ls, 
-        *opoint_tool_ls,
-        # wd_qe_tool # Deactivated for now
-    ],
+agent_executor = AgentExecutor(
+    agent=chain,
+    tools=tools,
+    handle_parsing_errors=True,
     verbose=True,
-    memory=composable_memory,
-    max_iterations=20,
-    context="""
-    You are a top-level agent designed to choose the most appropriate 
-    tool or agent to answer a user's question.
-    """,
+    memory=memory,
+    return_intermediate_steps=True,
 )
 
 # FastApi app setup ----------------------------
@@ -412,32 +384,55 @@ agent = ReActAgent(
 def index():
     return {"Message": "Agentic RAG API is running"}
 
-
-## Main endpoint for querying the agent
 from pydantic import BaseModel
 
-class QuestionRequest(BaseModel):
+class QueryRequest(BaseModel):
     question: str
 
-@app.post("/query")
-async def query_endpoint(request: QuestionRequest):
-    try:
-        # Query the agent and get the response as a string
-        reply = agent.chat(request.question)
-        # Return the structured response and the processed raw_output
-        result = {
-            "response": reply.response,
-            "sources": [item.dict() for item in reply.sources],
-        }
+class IntermediateStep(BaseModel):
+    action: str
+    action_input: Dict[str, Any]
+    observation: Any
 
-        return result
-    except requests.exceptions.ConnectionError:
-        raise HTTPException(
-            status_code=503,
-            detail="Unable to connect to the knowledge base. Please try again later.",
+class QueryResponse(BaseModel):
+    response: str
+    intermediate_steps: List[IntermediateStep]
+
+
+from pydantic import ValidationError
+
+@app.post("/query", response_model=QueryResponse)
+async def query_agent(request: QueryRequest):
+    """
+    Endpoint to interact with the agent.
+
+    Args:
+    - request (QueryRequest): Pydantic model with the user input.
+
+    Returns:
+    - QueryResponse: The agent's output and intermediate steps.
+    """
+    try:
+        # Call the agent executor with the user input
+        result = await agent_executor.ainvoke(input={"input": request.question})
+
+        # Prepare the response
+        response = QueryResponse(
+            response=result.get("output"),
+            intermediate_steps=[
+                IntermediateStep(
+                    action=step[0].tool,
+                    action_input=step[0].tool_input,
+                    observation=step[1],
+                )
+                for step in result.get("intermediate_steps", [])
+            ],
         )
+        return response
+    except ValidationError as ve:
+        raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 
 # If you're running this locally, use Uvicorn to serve the app
