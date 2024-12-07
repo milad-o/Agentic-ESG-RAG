@@ -391,32 +391,13 @@ class QueryRequest(BaseModel):
     question: str
 
 
-# Output model
-class QueryResponse(BaseModel):
-    response: Any
-    intermediate_steps: Any
-
-
 # Agent Query Endpoint
-@app.post("/query", response_model=QueryResponse)
+@app.post("/query")
 async def query_agent(request: QueryRequest):
-    """
-    Endpoint to interact with the agent.
-    Args:
-    - request (QueryRequest): User's query input.
-    Returns:
-    - QueryResponse: The agent's output and intermediate steps.
-    """
     try:
         # Call the agent executor with the user input
         result = await agent_executor.ainvoke(input={"input": request.question})
-
-        # Structure the response
-        response = QueryResponse(
-            response=result.get("output", "No output generated"),
-            intermediate_steps=result.get("intermediate_steps", []),
-        )
-        return response
+        return result
 
     except ValidationError as ve:
         raise HTTPException(status_code=422, detail=str(ve))
