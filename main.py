@@ -389,46 +389,15 @@ from pydantic import BaseModel
 class QueryRequest(BaseModel):
     question: str
 
-class IntermediateStep(BaseModel):
-    action: str
-    action_input: Dict[str, Any]
-    observation: Any
-
-class QueryResponse(BaseModel):
-    response: str
-    intermediate_steps: List[IntermediateStep]
-
-
 from pydantic import ValidationError
 
-@app.post("/query", response_model=QueryResponse)
+@app.post("/query", response_model=QueryRequest)
 async def query_agent(request: QueryRequest):
-    """
-    Endpoint to interact with the agent.
-
-    Args:
-    - request (QueryRequest): Pydantic model with the user input.
-
-    Returns:
-    - QueryResponse: The agent's output and intermediate steps.
-    """
     try:
         # Call the agent executor with the user input
         result = await agent_executor.ainvoke(input={"input": request.question})
 
-        # Prepare the response
-        response = QueryResponse(
-            response=result.get("output"),
-            intermediate_steps=[
-                IntermediateStep(
-                    action=step[0].tool,
-                    action_input=step[0].tool_input,
-                    observation=step[1],
-                )
-                for step in result.get("intermediate_steps", [])
-            ],
-        )
-        return response
+        return result
     except ValidationError as ve:
         raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
