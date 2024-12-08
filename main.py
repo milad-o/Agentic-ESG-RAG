@@ -100,31 +100,25 @@ from langchain_core.tools import tool
 
 @tool
 async def search_news(
-    header: str, additional_keywords: Optional[str] = None, number_of_articles: int = 5
+    main_keyword: str, additional_keywords: Optional[str] = None, number_of_articles: int = 5
 ) -> List[Dict[str, Any]]:
     """
     Fetches recent news articles related to a specified company and additional keywords.
 
     Parameters:
     ----------
-    header : str
-        The headline keyword to search for in the articles. Usually the name of the company.
+    main_keyword : str
+    - The main keyword to search for in the articles. Usually the name of the company.
 
-    body : Optional[str], optional
-        Additional keywords to filter articles based on their text content. Default is None.
+    additional_keywords : Optional[str], optional
+    - Additional keywords to filter articles based on their text content. Default is None.
 
     number_of_articles : int, optional
-        The number of articles to fetch. Defaults to 5.
+    - The number of articles to fetch. Defaults to 5.
 
     Returns:
     -------
     List[Dict[str, Any]]
-        - If articles are found:
-            A list of Document objects containing the fetched articles, including metadata such as the URL, global rank, and country rank.
-        - If no articles are found:
-            A list containing a dictionary with a "message" key indicating no results and encouraging a retry with body-only keywords.
-        - If an error occurs:
-            A list containing a dictionary with a "message" key describing the error.
     """
 
     async def fetch_articles(search_term: str) -> List[Document]:
@@ -158,25 +152,25 @@ async def search_news(
                     response.raise_for_status()
                     response_data = await response.json()
 
-                documents = response_data.get("searchresult", {}).get("document", [])
-                return [
-                    Document(
-                        page_content=f"Heading: {doc['header']}\n\n{doc['body']['text']}",
-                        metadata={
-                            "url": doc.get("orig_url", ""),
-                            "rank_global": doc.get("site_rank", {}).get(
-                                "rank_global", None
-                            ),
-                            "rank_country": doc.get("site_rank", {}).get(
-                                "rank_country", None
-                            ),
-                        },
+                results = response_data['searchresult']['document']
+
+                docs = []
+
+                for doc in results:
+                    docs.append(
+                        Document(
+                            page_content=f"{doc['body']['text']}",
+                            metadata={
+                                "url": doc["orig_url"],
+                                "rank_global": doc['site_rank']['rank_global'],
+                                "rank_country": doc['site_rank']['rank_country'],
+                            }
+                        )
                     )
-                    for doc in documents
-                ]
+                return docs
             except aiohttp.ClientError as e:
                 print(f"Error fetching articles: {e}")
-                return []
+                return None
 
     # Base Opoint API URL and authorization token
     api_url = "https://api.opoint.com/search/"
@@ -189,45 +183,25 @@ async def search_news(
     }
 
     # Initial search using header and body keywords
-    search_term = f"header:'{header}'"
+    search_term = f"header:{main_keyword}"
     if additional_keywords:
-        search_term += f" AND {additional_keywords}"
+        search_term += f" body:{additional_keywords}"
     search_term += " profile:523024"
-    search_term = f"({search_term})"
+    search_term = f"{search_term}"
 
-    docs = await fetch_articles(search_term)
-    if docs:
+    documents = await fetch_articles(search_term)
+    if documents:
         # Process and split documents if found
-        doc_splits = text_splitter.split_documents(docs)
+        doc_splits = text_splitter.split_documents(documents)
         vectorstore = Chroma.from_documents(
             documents=doc_splits,
             embedding=embed_model,
             collection_name="opoint",
         )
-        retriever = vectorstore.as_retriever()
-        return await retriever.ainvoke(search_term)
-
-    # Retry with body-only search if header+body search fails
-    if additional_keywords:
-        body_search_term = f"body:{additional_keywords}"
-        docs = await fetch_articles(f"({body_search_term})")
-        if docs:
-            doc_splits = text_splitter.split_documents(docs)
-            vectorstore = Chroma.from_documents(
-                documents=doc_splits,
-                embedding=embed_model,
-                collection_name="opoint_body_only",
-            )
-            retriever = vectorstore.as_retriever()
-            return await retriever.ainvoke(body_search_term)
+        return await vectorstore.asimilarity_search(search_term)
 
     # Notify the agent if no results are found in both searches
-    return [
-        {
-            "message": f"No news articles found for '{header}' with the specified criteria. "
-            f"Retry with relaxed filter through additional keywords and no header: '{header} {additional_keywords}' for better results."
-        }
-    ]
+    return "No search results found."
 from elasticsearch import AsyncElasticsearch
 
 
@@ -240,6 +214,7 @@ es_client = AsyncElasticsearch(
 )
 
 from typing import Dict, List, Any
+
 
 @tool
 async def search_documents(
@@ -296,8 +271,7 @@ async def search_documents(
             collection_name="elasticsearch",
         )
 
-        retriever = vectorstore.as_retriever()
-        return await retriever.ainvoke(query_text)
+        return await vectorstore.asimilarity_search(query_text)
 
     except Exception as e:
         print(f"Error searching Elasticsearch: {e}")
