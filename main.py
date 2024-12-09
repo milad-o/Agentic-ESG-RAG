@@ -4,6 +4,24 @@
 
 # If you're running this locally, use `uvicorn` to serve the app
 
+# FastAPI security setup -----------------------
+from fastapi import Security, HTTPException, status
+from fastapi.security.api_key import APIKeyHeader
+
+APP_API_KEY = "test"
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def check_api_key(api_key: str = Security(api_key_header)):
+    if api_key == APP_API_KEY:
+        return api_key
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 # FastAPI app setup ----------------------------
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -379,7 +397,7 @@ agent_executor = AgentExecutor(
 # FastApi app setup ----------------------------
 @app.get("/")
 def index():
-    return {"Message": "Agentic RAG API is running"}
+    return {"Message": "Agentic RAG App is running"}
 
 from pydantic import BaseModel, ValidationError
 
@@ -390,7 +408,7 @@ class QueryRequest(BaseModel):
 
 # Agent Query Endpoint
 @app.post("/query")
-async def query_agent(request: QueryRequest):
+async def query_agent(request: QueryRequest, api_key: str = Security(check_api_key)):
     try:
         # Call the agent executor with the user input
         result = await agent_executor.ainvoke(input={"input": request.question})
