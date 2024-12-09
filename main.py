@@ -4,11 +4,38 @@
 
 # If you're running this locally, use `uvicorn` to serve the app
 
-# FastAPI security setup -----------------------
-from fastapi import Security, HTTPException, status
-from fastapi.security.api_key import APIKeyHeader
+# Imports
+import os
+
+from dotenv import load_dotenv
+load_dotenv(override=True)
 
 APP_API_KEY = os.getenv("APP_API_KEY")
+
+import base64
+import tempfile
+
+WX_PROJECT_ID = os.getenv("WX_PROJECT_ID")
+IBM_CLOUD_API_KEY = os.getenv("IBM_CLOUD_API_KEY")
+WX_URL = os.getenv("WX_URL")
+OPOINT_TOKEN = os.getenv("OPOINT_TOKEN")
+ES_URL = os.getenv("ES_URL")
+ES_USERNAME = os.getenv("ES_USERNAME")
+ES_PASSWORD = os.getenv("ES_PASSWORD")
+ES_CERT = os.getenv("ES_CERT")
+
+# Decode the Base64 certificate
+es_cert = base64.b64decode(ES_CERT).decode("utf-8")
+
+# Write the decoded certificate to a temporary file
+with tempfile.NamedTemporaryFile(delete=False) as temp_cert_file:
+    temp_cert_file.write(es_cert.encode("utf-8"))
+    temp_cert_path = temp_cert_file.name
+
+
+# FastAPI security setup ----------------------------
+from fastapi import Security, HTTPException, status
+from fastapi.security.api_key import APIKeyHeader
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -35,33 +62,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Load environment variables -------------------
-import base64
-import tempfile
-
-import os
-
-from dotenv import load_dotenv
-
-load_dotenv(override=True)
-
-WX_PROJECT_ID = os.getenv("WX_PROJECT_ID")
-IBM_CLOUD_API_KEY = os.getenv("IBM_CLOUD_API_KEY")
-WX_URL = os.getenv("WX_URL")
-OPOINT_TOKEN = os.getenv("OPOINT_TOKEN")
-ES_URL = os.getenv("ES_URL")
-ES_USERNAME = os.getenv("ES_USERNAME")
-ES_PASSWORD = os.getenv("ES_PASSWORD")
-ES_CERT = os.getenv("ES_CERT")
-
-# Decode the Base64 certificate
-es_cert = base64.b64decode(ES_CERT).decode("utf-8")
-
-# Write the decoded certificate to a temporary file
-with tempfile.NamedTemporaryFile(delete=False) as temp_cert_file:
-    temp_cert_file.write(es_cert.encode("utf-8"))
-    temp_cert_path = temp_cert_file.name
 
 
 
