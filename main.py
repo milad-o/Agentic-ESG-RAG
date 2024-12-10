@@ -216,7 +216,7 @@ async def search_news(
             embedding=embed_model,
             collection_name="opoint",
         )
-        return await vectorstore.asimilarity_search(search_term)
+        return await vectorstore.asimilarity_search(search_term, k = 3)
 
     # Notify the agent if no results are found in both searches
     return "No search results found."
@@ -289,7 +289,7 @@ async def search_documents(
             collection_name="elasticsearch",
         )
 
-        return await vectorstore.asimilarity_search(query_text)
+        return await vectorstore.asimilarity_search(query_text, k = 3)
 
     except Exception as e:
         print(f"Error searching Elasticsearch: {e}")
