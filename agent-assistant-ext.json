@@ -1,0 +1,143 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Query API",
+    "description": "API for querying knowledge base using natural language questions",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://{app_name}.1nf7c8yoyzki.us-south.codeengine.appdomain.cloud/",
+      "description": "The route to the application hosting the agentic bot",
+      "variables": {
+        "app_name": {
+          "default": "agent-langchain",
+          "description": "The name of the application in the Code Engine agentic-rag project"
+        }
+      }
+    }
+  ],
+  "paths": {
+    "/query": {
+      "post": {
+        "summary": "Query the agent",
+        "description": "This endpoint accepts a question and returns the agent's response.",
+        "security": [
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "question": {
+                    "type": "string",
+                    "example": "How diverse is Giant Eagle's board of directors in terms of gender, ethnicity, and expertise?"
+                  }
+                },
+                "required": ["question"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response from the knowledge base",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "response": {
+                      "type": "string",
+                      "example": "Giant Eagle's board of directors consists of 11 members, with 6 female directors (54.5% of the total) and 5 male directors (45.5% of the total). In terms of ethnicity, there are 2 Asian directors (18.2%), 1 Black or African American director (9.1%), and 8 White directors (72.7%). No specific information is provided about the directors' expertise."
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "content": {
+                            "type": "string",
+                            "example": "Giant Eagle's board of directors consists of 11 members, with 6 female directors (54.5% of the total) and 5 male directors (45.5% of the total)."
+                          },
+                          "tool_name": {
+                            "type": "string",
+                            "example": "query_knowledge_base"
+                          },
+                          "raw_input": {
+                            "type": "object",
+                            "properties": {
+                              "args": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "kwargs": {
+                                "type": "object",
+                                "properties": {
+                                  "question": {
+                                    "type": "string",
+                                    "example": "How diverse is Giant Eagle's board of directors in terms of gender, ethnicity, and expertise?"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "raw_output": {
+                            "type": "string",
+                            "example": "Giant Eagle's board of directors consists of 11 members, with 6 female directors (54.5% of the total) and 5 male directors (45.5% of the total)."
+                          },
+                          "is_error": {
+                            "type": "boolean",
+                            "example": false
+                          }
+                        }
+                      }
+                    },
+                    "source_nodes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      },
+                      "example": []
+                    },
+                    "is_dummy_stream": {
+                      "type": "boolean",
+                      "example": false
+                    },
+                    "metadata": {
+                      "type": "object",
+                      "nullable": true,
+                      "example": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Unauthorized. Invalid or missing API key."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    }
+  }
+}
