@@ -4,29 +4,16 @@
 
 # If you're running this locally, use `uvicorn` to serve the app
 
-# FastAPI app setup ----------------------------
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Load environment variables -------------------
-import base64
-import tempfile
-
+# Imports
 import os
 
 from dotenv import load_dotenv
-
 load_dotenv(override=True)
+
+APP_API_KEY = os.getenv("APP_API_KEY")
+
+import base64
+import tempfile
 
 WX_PROJECT_ID = os.getenv("WX_PROJECT_ID")
 IBM_CLOUD_API_KEY = os.getenv("IBM_CLOUD_API_KEY")
@@ -44,6 +31,37 @@ es_cert = base64.b64decode(ES_CERT).decode("utf-8")
 with tempfile.NamedTemporaryFile(delete=False) as temp_cert_file:
     temp_cert_file.write(es_cert.encode("utf-8"))
     temp_cert_path = temp_cert_file.name
+
+
+# FastAPI security setup ----------------------------
+from fastapi import Security, HTTPException, status
+from fastapi.security.api_key import APIKeyHeader
+
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def check_api_key(api_key: str = Security(api_key_header)):
+    if api_key == APP_API_KEY:
+        return api_key
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+# FastAPI app setup ----------------------------
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 
@@ -99,32 +117,26 @@ from langchain_core.tools import tool
 
 
 @tool
-async def search_news_articles(
-    header: str, additional_keywords: Optional[str] = None, number_of_articles: int = 5
+async def search_news(
+    main_keyword: str, additional_keywords: Optional[str] = None, number_of_articles: int = 5
 ) -> List[Dict[str, Any]]:
     """
     Fetches recent news articles related to a specified company and additional keywords.
 
     Parameters:
     ----------
-    header : str
-        The headline keyword to search for in the articles. Usually the name of the company.
+    main_keyword : str
+    - The main keyword to search for in the articles. Usually the name of the company.
 
-    body : Optional[str], optional
-        Additional keywords to filter articles based on their text content. Default is None.
+    additional_keywords : Optional[str], optional
+    - Additional keywords to filter articles based on their text content. Default is None.
 
     number_of_articles : int, optional
-        The number of articles to fetch. Defaults to 5.
+    - The number of articles to fetch. Defaults to 5.
 
     Returns:
     -------
     List[Dict[str, Any]]
-        - If articles are found:
-            A list of Document objects containing the fetched articles, including metadata such as the URL, global rank, and country rank.
-        - If no articles are found:
-            A list containing a dictionary with a "message" key indicating no results and encouraging a retry with body-only keywords.
-        - If an error occurs:
-            A list containing a dictionary with a "message" key describing the error.
     """
 
     async def fetch_articles(search_term: str) -> List[Document]:
@@ -158,25 +170,25 @@ async def search_news_articles(
                     response.raise_for_status()
                     response_data = await response.json()
 
-                documents = response_data.get("searchresult", {}).get("document", [])
-                return [
-                    Document(
-                        page_content=f"Heading: {doc['header']}\n\n{doc['body']['text']}",
-                        metadata={
-                            "url": doc.get("orig_url", ""),
-                            "rank_global": doc.get("site_rank", {}).get(
-                                "rank_global", None
-                            ),
-                            "rank_country": doc.get("site_rank", {}).get(
-                                "rank_country", None
-                            ),
-                        },
+                results = response_data['searchresult']['document']
+
+                docs = []
+
+                for doc in results:
+                    docs.append(
+                        Document(
+                            page_content=f"{doc['body']['text']}",
+                            metadata={
+                                "url": doc["orig_url"],
+                                "rank_global": doc['site_rank']['rank_global'],
+                                "rank_country": doc['site_rank']['rank_country'],
+                            }
+                        )
                     )
-                    for doc in documents
-                ]
+                return docs
             except aiohttp.ClientError as e:
                 print(f"Error fetching articles: {e}")
-                return []
+                return None
 
     # Base Opoint API URL and authorization token
     api_url = "https://api.opoint.com/search/"
@@ -189,45 +201,25 @@ async def search_news_articles(
     }
 
     # Initial search using header and body keywords
-    search_term = f"header:'{header}'"
+    search_term = f"header:{main_keyword}"
     if additional_keywords:
-        search_term += f" AND {additional_keywords}"
+        search_term += f" body:{additional_keywords}"
     search_term += " profile:523024"
-    search_term = f"({search_term})"
+    search_term = f"{search_term}"
 
-    docs = await fetch_articles(search_term)
-    if docs:
+    documents = await fetch_articles(search_term)
+    if documents:
         # Process and split documents if found
-        doc_splits = text_splitter.split_documents(docs)
+        doc_splits = text_splitter.split_documents(documents)
         vectorstore = Chroma.from_documents(
             documents=doc_splits,
             embedding=embed_model,
             collection_name="opoint",
         )
-        retriever = vectorstore.as_retriever()
-        return await retriever.ainvoke(search_term)
-
-    # Retry with body-only search if header+body search fails
-    if additional_keywords:
-        body_search_term = f"body:{additional_keywords}"
-        docs = await fetch_articles(f"({body_search_term})")
-        if docs:
-            doc_splits = text_splitter.split_documents(docs)
-            vectorstore = Chroma.from_documents(
-                documents=doc_splits,
-                embedding=embed_model,
-                collection_name="opoint_body_only",
-            )
-            retriever = vectorstore.as_retriever()
-            return await retriever.ainvoke(body_search_term)
+        return await vectorstore.asimilarity_search(search_term, k = 3)
 
     # Notify the agent if no results are found in both searches
-    return [
-        {
-            "message": f"No news articles found for '{header}' with the specified criteria. "
-            f"Retry with relaxed filter through additional keywords and no header: '{header} {additional_keywords}' for better results."
-        }
-    ]
+    return "No search results found."
 from elasticsearch import AsyncElasticsearch
 
 
@@ -241,13 +233,13 @@ es_client = AsyncElasticsearch(
 
 from typing import Dict, List, Any
 
+
 @tool
-async def search_corporate_reports(
+async def search_documents(
     query_text: str, index: str = "index_m1", top_hits: int = 10
 ) -> List[Dict[str, Any]]:
     """
-    Search the corporate documents database and returns a list of dictionaries
-    representing matching documents with metadata.
+    Search the corporate documents database and returns a list of Documents with metadata.
 
     Args:
     - query_text (str): The text to search for in the documents.
@@ -275,7 +267,7 @@ async def search_corporate_reports(
     try:
         response = await es_client.search(index=index, body=search_query)
         hits = response["hits"]["hits"]
-        results = [
+        documents = [
             Document(
                 page_content=hit["_source"]["body_content_field"],
                 metadata={
@@ -285,20 +277,40 @@ async def search_corporate_reports(
             )
             for hit in hits
         ]
-        return results
+
+        if not documents:
+            print("No documents found in database.")
+            return []
+        
+        doc_splits = text_splitter.split_documents(documents)
+        vectorstore = Chroma.from_documents(
+            documents=doc_splits,
+            embedding=embed_model,
+            collection_name="elasticsearch",
+        )
+
+        return await vectorstore.asimilarity_search(query_text, k = 3)
 
     except Exception as e:
         print(f"Error searching Elasticsearch: {e}")
         return []
     
 # Set up list of tools
-tools = [search_corporate_reports, search_news_articles]
+tools = [search_documents, search_news]
 
 # Setting up prompts for the agent
 
-system_prompt = """Respond to the human as helpfully and accurately as possible. You have access to the following tools: {tools}
+system_prompt = """Respond to the human as helpfully and accurately as possible.
+
+You have access to the following tools: {tools}
+
+You are responsible for using the tools in any sequence you deem appropriate to complete the task at hand.
+This may require breaking the task into subtasks and using different tools to complete each subtask to achieve the goal.
+
 Use a json blob to specify a tool by providing an action key (tool name) and an action_input key (tool input).
+
 Valid "action" values: "Final Answer" or {tool_names}
+
 Provide only ONE action per $JSON_BLOB, as shown:"
 ```
 {{
@@ -323,7 +335,10 @@ Action:
   "action_input": "Final response to human"
 }}
 Begin! Reminder to ALWAYS respond with a valid json blob of a single action.
-Respond directly if appropriate. Format is Action:```$JSON_BLOB```then Observation"""
+Respond directly if appropriate. Format is Action:```$JSON_BLOB```then Observation
+
+"""
+
 
 human_prompt = """{input}
 {agent_scratchpad}
@@ -382,7 +397,7 @@ agent_executor = AgentExecutor(
 # FastApi app setup ----------------------------
 @app.get("/")
 def index():
-    return {"Message": "Agentic RAG API is running"}
+    return {"Message": "Agentic RAG App is running"}
 
 from pydantic import BaseModel, ValidationError
 
@@ -393,7 +408,7 @@ class QueryRequest(BaseModel):
 
 # Agent Query Endpoint
 @app.post("/query")
-async def query_agent(request: QueryRequest):
+async def query_agent(request: QueryRequest, api_key: str = Security(check_api_key)):
     try:
         # Call the agent executor with the user input
         result = await agent_executor.ainvoke(input={"input": request.question})
