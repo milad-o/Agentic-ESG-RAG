@@ -364,34 +364,45 @@ prompt = prompt.partial(
 )
 
 
-# Memory setup
 from langchain.memory import ConversationBufferMemory
-
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
-# Langchain setup
 from langchain_core.runnables import RunnablePassthrough
 from langchain.agents.format_scratchpad import format_log_to_str
 from langchain.agents.output_parsers import JSONAgentOutputParser
 from langchain.agents import AgentExecutor
+from langchain_core.runnables.history import RunnableWithMessageHistory
 
-chain = (
+# 1. Memory Setup (No longer passed directly to AgentExecutor)
+memory = ConversationBufferMemory(
+    memory_key="chat_history",
+    return_messages=True  # Required for chat-style memory
+)
+
+# 2. Build Base Agent Chain (without memory)
+base_chain = (
     RunnablePassthrough.assign(
-        agent_scratchpad=lambda x: format_log_to_str(x["intermediate_steps"]),
-        chat_history=lambda x: memory.chat_memory.messages,
+        agent_scratchpad=lambda x: format_log_to_str(x["intermediate_steps"])
     )
     | prompt
     | llm
     | JSONAgentOutputParser()
 )
 
+# 3. Create AgentExecutor
 agent_executor = AgentExecutor(
-    agent=chain,
+    agent=base_chain,
     tools=tools,
     handle_parsing_errors=True,
     verbose=True,
-    memory=memory,
-    return_intermediate_steps=True,
+    return_intermediate_steps=True
+)
+
+# 4. Wrap with RunnableWithMessageHistory
+agent_with_history = RunnableWithMessageHistory(
+    runnable=agent_executor,
+    get_session_history=lambda session_id: memory.chat_memory,
+    input_messages_key="input",  # Key for user input
+    output_messages_key="output",  # Key for agent response
+    history_messages_key="chat_history"  # Matches memory_key
 )
 
 # FastApi app setup ----------------------------
@@ -411,7 +422,10 @@ class QueryRequest(BaseModel):
 async def query_agent(request: QueryRequest, api_key: str = Security(check_api_key)):
     try:
         # Call the agent executor with the user input
-        result = await agent_executor.ainvoke(input={"input": request.question})
+        result = await agent_with_history.ainvoke(
+            {"input": request.question},
+            config={"configurable": {"session_id": "123456789"}}
+        )
         return result
 
     except ValidationError as ve:

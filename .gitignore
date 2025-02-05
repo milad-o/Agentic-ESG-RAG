@@ -1,4 +1,5 @@
 .env
-Agent_LangChain_v1.ipynb
+.DS_Store
 __pycache__/
 archive/
+development_notebooks/
