@@ -2,12 +2,11 @@
 # This is the main file for the Agentic_RAG_App
 # It contains the FastAPI app, the main function, and the index function
 
-# If you're running this locally, use `uvicorn` to serve the app
-
 # Imports
 import os
 
 from dotenv import load_dotenv
+
 load_dotenv(override=True)
 
 APP_API_KEY = os.getenv("APP_API_KEY")
@@ -24,20 +23,21 @@ ES_USERNAME = os.getenv("ES_USERNAME")
 ES_PASSWORD = os.getenv("ES_PASSWORD")
 ES_CERT = os.getenv("ES_CERT")
 
-# Decode the Base64 certificate
+# Certificate for Elasticsearch ----------------
+## Decode the Base64 certificate
 es_cert = base64.b64decode(ES_CERT).decode("utf-8")
 
-# Write the decoded certificate to a temporary file
+## Write the decoded certificate to a temporary file
 with tempfile.NamedTemporaryFile(delete=False) as temp_cert_file:
     temp_cert_file.write(es_cert.encode("utf-8"))
     temp_cert_path = temp_cert_file.name
-
 
 # FastAPI security setup ----------------------------
 from fastapi import Security, HTTPException, status
 from fastapi.security.api_key import APIKeyHeader
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
 
 async def check_api_key(api_key: str = Security(api_key_header)):
     if api_key == APP_API_KEY:
@@ -49,7 +49,7 @@ async def check_api_key(api_key: str = Security(api_key_header)):
     )
 
 
-# FastAPI app setup ----------------------------
+# FastAPI app setup --------------------------------
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -63,20 +63,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-
-# Decode the Base64 certificate for Elasticsearch
-es_cert = base64.b64decode(ES_CERT).decode("utf-8")
-
-# Write the decoded certificate to a temporary file
-with tempfile.NamedTemporaryFile(delete=False) as temp_cert_file:
-    temp_cert_file.write(es_cert.encode("utf-8"))
-    temp_cert_path = temp_cert_file.name
-
-# Required imports ----------------------------
+# LLM and Embedding model --------------------------
 from langchain_ibm import WatsonxEmbeddings, WatsonxLLM
-
-# LLM and Embedding model ---------------------
 from ibm_watsonx_ai.foundation_models.utils.enums import EmbeddingTypes
 from ibm_watsonx_ai.metanames import GenTextParamsMetaNames as GenParams
 
@@ -107,7 +95,6 @@ text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
     chunk_size=256, chunk_overlap=64
 )
 
-
 # Function/tools for the agent -------------------
 import aiohttp
 from typing import Dict, List, Any, Optional
@@ -115,10 +102,12 @@ from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_core.tools import tool
 
-
+## Function to fetch articles from OPoint
 @tool
 async def search_news(
-    main_keyword: str, additional_keywords: Optional[str] = None, number_of_articles: int = 5
+    main_keyword: str,
+    additional_keywords: Optional[str] = None,
+    number_of_articles: int = 5,
 ) -> List[Dict[str, Any]]:
     """
     Fetches recent news articles related to a specified company and additional keywords.
@@ -170,7 +159,7 @@ async def search_news(
                     response.raise_for_status()
                     response_data = await response.json()
 
-                results = response_data['searchresult']['document']
+                results = response_data["searchresult"]["document"]
 
                 docs = []
 
@@ -180,9 +169,9 @@ async def search_news(
                             page_content=f"{doc['body']['text']}",
                             metadata={
                                 "url": doc["orig_url"],
-                                "rank_global": doc['site_rank']['rank_global'],
-                                "rank_country": doc['site_rank']['rank_country'],
-                            }
+                                "rank_global": doc["site_rank"]["rank_global"],
+                                "rank_country": doc["site_rank"]["rank_country"],
+                            },
                         )
                     )
                 return docs
@@ -216,14 +205,15 @@ async def search_news(
             embedding=embed_model,
             collection_name="opoint",
         )
-        return await vectorstore.asimilarity_search(search_term, k = 3)
+        return await vectorstore.asimilarity_search(search_term, k=3)
 
     # Notify the agent if no results are found in both searches
     return "No search results found."
-from elasticsearch import AsyncElasticsearch
 
 
 ## Elasticsearch function
+from elasticsearch import AsyncElasticsearch
+
 es_client = AsyncElasticsearch(
     ES_URL,
     basic_auth=(ES_USERNAME, ES_PASSWORD),
@@ -232,7 +222,6 @@ es_client = AsyncElasticsearch(
 )
 
 from typing import Dict, List, Any
-
 
 @tool
 async def search_documents(
@@ -281,7 +270,7 @@ async def search_documents(
         if not documents:
             print("No documents found in database.")
             return []
-        
+
         doc_splits = text_splitter.split_documents(documents)
         vectorstore = Chroma.from_documents(
             documents=doc_splits,
@@ -289,17 +278,17 @@ async def search_documents(
             collection_name="elasticsearch",
         )
 
-        return await vectorstore.asimilarity_search(query_text, k = 3)
+        return await vectorstore.asimilarity_search(query_text, k=3)
 
     except Exception as e:
         print(f"Error searching Elasticsearch: {e}")
         return []
-    
+
+
 # Set up list of tools
 tools = [search_documents, search_news]
 
-# Setting up prompts for the agent
-
+# Agent prompt -----------------------------------------------
 system_prompt = """Respond to the human as helpfully and accurately as possible.
 
 You have access to the following tools: {tools}
@@ -357,13 +346,12 @@ prompt = ChatPromptTemplate.from_messages(
 
 from langchain.tools.render import render_text_description_and_args
 
-
 prompt = prompt.partial(
     tools=render_text_description_and_args(list(tools)),
     tool_names=", ".join([t.name for t in tools]),
 )
 
-
+# Agent memory -----------------------------------------------
 from langchain.memory import ConversationBufferMemory
 from langchain_core.runnables import RunnablePassthrough
 from langchain.agents.format_scratchpad import format_log_to_str
@@ -371,13 +359,10 @@ from langchain.agents.output_parsers import JSONAgentOutputParser
 from langchain.agents import AgentExecutor
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
-# 1. Memory Setup (No longer passed directly to AgentExecutor)
 memory = ConversationBufferMemory(
-    memory_key="chat_history",
-    return_messages=True  # Required for chat-style memory
+    memory_key="chat_history", return_messages=True  # Required for chat-style memory
 )
 
-# 2. Build Base Agent Chain (without memory)
 base_chain = (
     RunnablePassthrough.assign(
         agent_scratchpad=lambda x: format_log_to_str(x["intermediate_steps"])
@@ -387,25 +372,23 @@ base_chain = (
     | JSONAgentOutputParser()
 )
 
-# 3. Create AgentExecutor
 agent_executor = AgentExecutor(
     agent=base_chain,
     tools=tools,
     handle_parsing_errors=True,
     verbose=True,
-    return_intermediate_steps=True
+    return_intermediate_steps=True,
 )
 
-# 4. Wrap with RunnableWithMessageHistory
 agent_with_history = RunnableWithMessageHistory(
     runnable=agent_executor,
     get_session_history=lambda session_id: memory.chat_memory,
     input_messages_key="input",  # Key for user input
     output_messages_key="output",  # Key for agent response
-    history_messages_key="chat_history"  # Matches memory_key
+    history_messages_key="chat_history",  # Matches memory_key
 )
 
-# FastApi app setup ----------------------------
+# FastApi app setup ------------------------------------------------
 @app.get("/")
 def index():
     return {"Message": "Agentic RAG App is running"}
@@ -416,25 +399,25 @@ from pydantic import BaseModel, ValidationError
 class QueryRequest(BaseModel):
     question: str
 
-
-# Agent Query Endpoint
+## Agent Query Endpoint 
 @app.post("/query")
 async def query_agent(request: QueryRequest, api_key: str = Security(check_api_key)):
     try:
         # Call the agent executor with the user input
         result = await agent_with_history.ainvoke(
             {"input": request.question},
-            config={"configurable": {"session_id": "123456789"}}
+            config={"configurable": {"session_id": "123456789"}},
         )
         return result
 
     except ValidationError as ve:
         raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error processing request: {str(e)}"
+        )
 
-
-# If you're running this locally, use Uvicorn to serve the app
+# Run the app
 if __name__ == "__main__":
     import sys
     import uvicorn
