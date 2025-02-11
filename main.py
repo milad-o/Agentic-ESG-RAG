@@ -102,6 +102,7 @@ from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_core.tools import tool
 
+
 ## Function to fetch articles from OPoint
 @tool
 async def search_news(
@@ -222,6 +223,7 @@ es_client = AsyncElasticsearch(
 )
 
 from typing import Dict, List, Any
+
 
 @tool
 async def search_documents(
@@ -388,18 +390,22 @@ agent_with_history = RunnableWithMessageHistory(
     history_messages_key="chat_history",  # Matches memory_key
 )
 
+
 # FastApi app setup ------------------------------------------------
 @app.get("/")
 def index():
     return {"Message": "Agentic RAG App is running"}
 
+
 from pydantic import BaseModel, ValidationError
+
 
 # Input model
 class QueryRequest(BaseModel):
     question: str
 
-## Agent Query Endpoint 
+
+## Agent Query Endpoint
 @app.post("/query")
 async def query_agent(request: QueryRequest, api_key: str = Security(check_api_key)):
     try:
@@ -416,6 +422,7 @@ async def query_agent(request: QueryRequest, api_key: str = Security(check_api_k
         raise HTTPException(
             status_code=500, detail=f"Error processing request: {str(e)}"
         )
+
 
 # Run the app
 if __name__ == "__main__":
